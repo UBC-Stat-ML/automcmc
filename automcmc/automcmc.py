@@ -78,7 +78,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         selector = selectors.DeterministicSymmetricSelector(),
         preconditioner = preconditioning.FixedDiagonalPreconditioner(),
         init_inv_temp = None,
-        initialization_settings = None
+        optimize_init_params = False
     ):
         self._model = model
         self._potential_fn = potential_fn
@@ -90,7 +90,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         self.init_inv_temp = (
             None if init_inv_temp is None else jnp.array(init_inv_temp)
         )
-        self.initialization_settings = initialization_settings
+        self.optimize_init_params = optimize_init_params
     
     def init_state(self, initial_params, rng_key):
         """
@@ -160,12 +160,15 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
                 ))
         
         # maybe optimize the initial parameters
-        if self.initialization_settings is not None:
+        if self.optimize_init_params:
+            settings = {}
+            if isinstance(self.optimize_init_params, dict):
+                settings=self.optimize_init_params
             initial_params = initialization.optimize_init_params(
                 self.logprior_and_loglik, 
                 initial_params, 
                 self.init_inv_temp,
-                self.initialization_settings
+                **settings
             )
 
         # initialize the state of the sampler

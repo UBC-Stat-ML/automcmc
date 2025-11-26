@@ -12,6 +12,27 @@ import tqdm
 
 from automcmc import utils
 
+# NADAMW
+# More robust than ADAM according to https://arxiv.org/abs/2306.07179)
+def make_nadamw_solver(target_fun, solver_params, verbose):
+    if verbose:
+        print(f'NADAMW optimization loop.')
+    
+    # build solver
+    solver = optax.nadamw(**solver_params)
+
+    # build loop function and jit it
+    @jax.jit
+    def step_fn(params, state):
+        value, grad = jax.value_and_grad(target_fun)(params)
+        updates, state = solver.update(grad, state, params)
+        params = optax.apply_updates(params, updates)
+        grad_norm = utils.pytree_norm(grad, ord=jnp.inf) # sup norm
+        return params, state, value, grad_norm
+    
+    return solver, step_fn
+
+
 # L-BFGS
 def make_lbfgs_solver(target_fun, solver_params, verbose):
     if verbose:
@@ -35,36 +56,21 @@ def make_lbfgs_solver(target_fun, solver_params, verbose):
     
     return solver, step_fn
 
-# optimization loop
-def optimize_fun(
-        target_fun, 
-        init_params, 
-        settings,
-        verbose = True,
+def optimization_loop(
+        target_fun,
+        step_fn,
+        params,
+        opt_state,
+        n_iter, 
         tol = None,
-        max_consecutive = 8
+        max_consecutive = 2, 
+        verbose = True
     ):
-    settings = deepcopy(settings) # safer since we `pop` stuff from it
-    
     if tol is None:
-        # default to sqrt of machine tol of the float type used in the first leaf
-        tol = 10*jnp.finfo(jax.tree.leaves(init_params)[0].dtype).eps
-
-    # select solver
-    solver = settings['strategy']
-    solver_params = settings['params']
-    n_iter = solver_params.pop('n_iter')
-    if settings['strategy'] == "L-BFGS":
-        solver, step_fn = make_lbfgs_solver(target_fun, solver_params, verbose)
-    else:
-        raise ValueError(
-            f"Unknown strategy '{settings['strategy']}'"
-        )
+        tol = 10*jnp.finfo(jax.tree.leaves(params)[0].dtype).eps
     
-    # optimization loop
-    value = old_value = target_fun(init_params)
+    value = old_value = target_fun(params)
     verbose and print(f'Initial energy: {value:.1e}')
-    params, opt_state = init_params, solver.init(init_params)
     old_params = params
     grad_norm = value_abs_diff = params_diff_norm = jnp.full_like(value, 10*tol)
     n_consecutive = np.zeros((3,), np.int32) # one counter for each termination criterion
@@ -93,9 +99,81 @@ def optimize_fun(
             t.set_postfix_str(diag_str, refresh=False) # will refresh with `update`
             t.update()
             n += 1
+    print(f'Final energy: {value:.1e}')
+    return params, opt_state, value
 
-    if verbose:
-        print(f'Final energy after {n} steps: {target_fun(params):.1e}')
-              
-    return params, opt_state
+DEFAULT_OPTIMIZE_FUN_SETTINGS = {
+    "NADAMW": {"n_iter": 1024, "solver_params": {"learning_rate": 0.003}},
+    "L-BFGS": {"n_iter": 32, "solver_params": {}}
+}
 
+def optimize_fun(
+        target_fun, 
+        init_params, 
+        settings = DEFAULT_OPTIMIZE_FUN_SETTINGS,
+        verbose = True,
+        **kwargs
+    ):
+    """
+    Gradient based optimization. By default it uses a two stage procedure:
+    an initial stage with NADAMW, and a second stage with L-BFGS. The idea is
+    to use NADAMW to find a good enough point for L-BFGS to take it from there.
+    This is especially useful when working with lower precision floats such as
+    `jnp.float32` (see e.g. [1]).
+    
+    :param target_fun: Function to minimize
+    :param init_params: Starting point
+    :param settings: Dictionary of settings passed to the solvers. See 
+        :data:`DEFAULT_OPTIMIZE_FUN_SETTINGS` for an example.
+    :param verbose: Should we print info?
+    :param kwargs: Passed to :func:`optimization_loop`
+    :return: Solution found
+
+    .. rubric:: References
+
+    .. [1] Kiyani, E., Shukla, K., Urbán, J. F., Darbon, J., & Karniadakis, 
+        G. E. (2025). Optimizing the optimizer for physics-informed neural 
+        networks and Kolmogorov-Arnold networks. *Computer Methods in Applied 
+        Mechanics and Engineering, 446*, 118308.
+    """
+    # start with NADAMW
+    init_value = value_nadamw = target_fun(init_params)
+    opt_params = init_params
+    if "NADAMW" in settings:
+        solver, step_fn = make_nadamw_solver(
+            target_fun, settings["NADAMW"]['solver_params'], verbose
+        )
+        opt_state = solver.init(init_params)
+        opt_params_nadamw, _, value_nadamw = optimization_loop(
+            target_fun,
+            step_fn,
+            init_params,
+            opt_state,
+            settings["NADAMW"]['n_iter'],
+            verbose=verbose,
+            **kwargs
+        )
+        if jnp.isfinite(value_nadamw) and value_nadamw<init_value:
+            opt_params = opt_params_nadamw
+        
+    # refine with L-BFGS
+    if "L-BFGS" in settings:
+        solver, step_fn = make_lbfgs_solver(
+            target_fun, settings["L-BFGS"]['solver_params'], verbose
+        )
+        opt_state = solver.init(opt_params)
+        opt_params_lbfgs, _, value_lbfgs = optimization_loop(
+            target_fun,
+            step_fn,
+            opt_params,
+            opt_state,
+            settings["L-BFGS"]['n_iter'],
+            verbose=verbose,
+            **kwargs
+        )
+    
+    # return lbfgs if better 
+    if value_lbfgs < value_nadamw:
+        return opt_params_lbfgs
+    else:
+        return opt_params_nadamw

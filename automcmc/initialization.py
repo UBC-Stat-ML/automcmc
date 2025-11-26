@@ -36,7 +36,7 @@ def MAP(
         rng_key,
         model_args,
         model_kwargs,
-        options = {'strategy': "L-BFGS", 'params': {'n_iter': 64}}
+        optimize_fun_settings=optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS
     ):
     init_params, potential_fn, *_ = init_model(
         model, rng_key, model_args, model_kwargs
@@ -44,8 +44,7 @@ def MAP(
     return optimization.optimize_fun(
         potential_fn, 
         init_params, 
-        options,
-        verbose = True
+        optimize_fun_settings,
     )
 
 # called within kernel initialization
@@ -53,7 +52,7 @@ def optimize_init_params(
         logprior_and_loglik, 
         init_params, 
         inv_temp, 
-        initialization_settings
+        **kwargs
     ):
     # define tempered posterior as target function
     target_fun = partial(
@@ -66,5 +65,5 @@ def optimize_init_params(
     return optimization.optimize_fun(
         target_fun, 
         init_params, 
-        initialization_settings
-    )[0]
+        **kwargs
+    )
