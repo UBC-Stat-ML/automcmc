@@ -18,8 +18,8 @@ class TestInitialization(unittest.TestCase):
             rng_key,
             model_args,
             model_kwargs,
-            options = {'strategy': "L-BFGS", 'params': {'n_iter': 64}}
-        )[0]
+            optimize_fun_settings={"L-BFGS": {"n_iter": 64, "solver_params": {}}}
+        )
 
         # transform to constrained space
         exec_trace = tempering.trace_from_unconst_samples(
