@@ -199,7 +199,7 @@ class SliceSampler(automcmc.AutoMCMC, metaclass=ABCMeta):
 
         return new_state, step_fwd, step_bwd
             
-    def sample(self, state, model_args, model_kwargs):
+    def sample_single_chain(self, state, model_args, model_kwargs):
         # generate rng keys and store the updated master key in the state
         (
             rng_key, 
@@ -269,10 +269,12 @@ class SliceSampler(automcmc.AutoMCMC, metaclass=ABCMeta):
 class DeterministicScanSliceSampler(SliceSampler):
 
     def init_extras(self, state):
-        p_flat = state.p_flat
-        return state._replace(
-            p_flat = jax.nn.one_hot(0, len(p_flat), dtype=p_flat.dtype)
-        )
+        init_fn = lambda vec: jax.nn.one_hot(0, len(vec), dtype=vec.dtype)
+        if jnp.shape(state.rng_key) == ():
+            p_flat = init_fn(state.p_flat)
+        else:
+            p_flat = jax.vmap(init_fn)(state.p_flat)
+        return state._replace(p_flat = p_flat)
 
     def refresh_aux_vars(self, rng_key, state, precond_state):
         return state._replace(p_flat = jnp.roll(state.p_flat, 1))

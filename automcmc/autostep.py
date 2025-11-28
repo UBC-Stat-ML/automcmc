@@ -73,7 +73,7 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         """
         raise NotImplementedError
     
-    def sample(self, state, model_args, model_kwargs):
+    def sample_single_chain(self, state, model_args, model_kwargs):
         # generate rng keys and store the updated master key in the state
         (
             rng_key, 

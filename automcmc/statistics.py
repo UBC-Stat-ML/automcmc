@@ -31,24 +31,24 @@ are cleared at the end of each round. Its fields are:
 """
 
 def make_adapt_stats_recorder(
-        sample_field_flat_shape, 
+        prototype_x_flat, 
         sample_var_shape = None,
         preconditioner = None
     ):
     if sample_var_shape is None:
         sample_var_shape = (
-            2*sample_field_flat_shape
+            2*prototype_x_flat.shape
             if is_dense(preconditioner) 
-            else sample_field_flat_shape
+            else prototype_x_flat.shape
         )
     return AutoMCMCAdaptStats()._replace(
-        sample_mean = jnp.zeros(sample_field_flat_shape),
-        sample_var = jnp.zeros(sample_var_shape)
+        sample_mean = jnp.zeros_like(prototype_x_flat),
+        sample_var = jnp.zeros_like(prototype_x_flat,shape=sample_var_shape)
     )
 
 def empty_adapt_stats_recorder(adapt_stats):
     return make_adapt_stats_recorder(
-        jnp.shape(adapt_stats.sample_mean),
+        adapt_stats.sample_mean,
         sample_var_shape=jnp.shape(adapt_stats.sample_var)
     )
 
@@ -69,10 +69,10 @@ A :func:`~collections.namedtuple` consisting of the following fields:
    information pertaining to the current round.
 """
 
-def make_stats_recorder(sample_field_flat_shape, preconditioner):
+def make_stats_recorder(prototype_x_flat, preconditioner):
     return AutoMCMCStats()._replace(
         adapt_stats = make_adapt_stats_recorder(
-            sample_field_flat_shape, preconditioner=preconditioner
+            prototype_x_flat, preconditioner=preconditioner
         )
     )
 
