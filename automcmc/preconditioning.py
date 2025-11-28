@@ -126,18 +126,13 @@ def is_dense(preconditioner):
 ###############################################################################
 
 # initialization
-def init_base_precond_state(sample_field_flat_shape, preconditioner):
+def init_base_precond_state(prototype_x_flat, preconditioner):
     if is_dense(preconditioner):
-        d = sample_field_flat_shape[0]
-        return PreconditionerState(
-            jnp.identity(d), jnp.identity(d), jnp.identity(d)
-        )
+        I = jnp.identity(prototype_x_flat.shape[0],prototype_x_flat.dtype)
+        return PreconditionerState(I, I, I)
     else: 
-        return PreconditionerState(
-            jnp.ones(sample_field_flat_shape),
-            jnp.ones(sample_field_flat_shape),
-            jnp.ones(sample_field_flat_shape)
-        )
+        ones = jnp.ones_like(prototype_x_flat)
+        return PreconditionerState(ones, ones, ones)
 
 def fix_cond_number(sample_var):
     eps = jnp.finfo(sample_var.dtype).eps

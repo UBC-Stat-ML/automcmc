@@ -2,6 +2,7 @@ from abc import ABCMeta
 from collections import namedtuple
 from functools import partial
 
+import jax
 from jax import flatten_util
 from jax import lax
 from jax import numpy as jnp
@@ -84,6 +85,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         self._potential_fn = potential_fn
         self.logprior_and_loglik = logprior_and_loglik
         self._postprocess_fn = None
+        self._sample_fn = self.sample_single_chain
         self.init_base_step_size = init_base_step_size
         self.selector = selector
         self.preconditioner = preconditioner
@@ -100,20 +102,18 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         :param rng_key: The PRNG key that the sampler should use for simulation.
         :return: The initial state of the sampler.
         """
-        sample_field_flat_shape = jnp.shape(flatten_util.ravel_pytree(initial_params)[0])
+        x_flat = flatten_util.ravel_pytree(initial_params)[0]
         return AutoMCMCState(
             initial_params,
-            jnp.zeros(sample_field_flat_shape),
-            jnp.array(0.), # Note: not the actual log-prior; needs to be updated 
-            jnp.array(0.), # Note: not the actual log-lik; needs to be updated 
-            jnp.array(0.), # Note: not the actual log-joint; needs to be updated 
+            jnp.zeros_like(x_flat),
+            jnp.array(0, x_flat.dtype), # Note: not the actual log-prior; needs to be updated 
+            jnp.array(0, x_flat.dtype), # Note: not the actual log-lik; needs to be updated 
+            jnp.array(0, x_flat.dtype), # Note: not the actual log-joint; needs to be updated 
             rng_key,
-            statistics.make_stats_recorder(
-                sample_field_flat_shape, self.preconditioner
-            ),
+            statistics.make_stats_recorder(x_flat, self.preconditioner),
             jnp.array(self.init_base_step_size),
             preconditioning.init_base_precond_state(
-                sample_field_flat_shape, self.preconditioner
+                x_flat, self.preconditioner
             ),
             None if self.init_inv_temp is None else jnp.array(self.init_inv_temp)
         )
@@ -130,10 +130,19 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         # determine number of adaptation rounds
         self.adapt_rounds = utils.n_warmup_to_adapt_rounds(num_warmup)
 
+        # check if we are running in vectorized mode
+        is_vectorized = jnp.shape(rng_key) != ()
+
         # initialize model if it exists, and if so, use it to get initial parameters
         if self.logprior_and_loglik is None:
             if self._model is not None:
-                rng_key, rng_key_init = random.split(rng_key)
+                if is_vectorized:
+                    rng_key, rng_key_init = jnp.swapaxes(
+                        jax.vmap(random.split)(rng_key), 0, 1
+                    )
+                else:
+                    rng_key, rng_key_init = random.split(rng_key)                    
+                
                 (
                     new_params, 
                     self._potential_fn, 
@@ -154,28 +163,40 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
             elif self._potential_fn is not None:
                 self.logprior_and_loglik = lambda x: (-self._potential_fn(x), 0.)
             else:
-                raise(ValueError(
+                raise ValueError(
                     "You need to provide a model, a logprior_and_loglik, or a " \
                     "potential function"
-                ))
+                )
         
         # maybe optimize the initial parameters
         if self.optimize_init_params:
+            if is_vectorized:
+                raise NotImplementedError(
+                    "Optimizing parameters for vectorized chains is" \
+                    "currently not supported."
+                )
             settings = {}
             if isinstance(self.optimize_init_params, dict):
                 settings=self.optimize_init_params
-            initial_params = initialization.optimize_init_params(
-                self.logprior_and_loglik, 
-                initial_params, 
-                self.init_inv_temp,
-                **settings
-            )
+                initial_params = initialization.optimize_init_params(
+                    self.logprior_and_loglik, 
+                    initial_params, 
+                    self.init_inv_temp,
+                    **settings
+                )
 
         # initialize the state of the sampler
-        initial_state = self.init_state(initial_params, rng_key)
+        if is_vectorized:
+            initial_state = jax.vmap(self.init_state)(initial_params, rng_key)
+        else:
+            initial_state = self.init_state(initial_params, rng_key)
 
         # carry out any other initialization required by the kernel
         initial_state = self.init_extras(initial_state)
+
+        # adjust the sampling function in case of vectorization
+        if is_vectorized:
+            self._sample_fn = jax.vmap(self._sample_fn, in_axes=(0,None,None))
 
         return initial_state
 
@@ -187,6 +208,9 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
     def model(self):
         return self._model
     
+    def sample(self, state, model_args, model_kwargs):
+        return self._sample_fn(state, model_args, model_kwargs)
+
     def get_diagnostics_str(self, state):
         return "base_step {:.2e}, rev_rate={:.2f}, acc_prob={:.2f}".format(
             state.base_step_size,

@@ -21,10 +21,15 @@ class AutoHMC(autostep.AutoStep):
         super().__init__(*args, **kwargs)
         self.n_leapfrog_steps = n_leapfrog_steps
         self.forward_mode_ad = forward_mode_ad
+        self.integrator = None
             
     def init_extras(self, initial_state):
+        if jnp.shape(initial_state.rng_key) == ():
+            proto_x = initial_state.x
+        else:
+            proto_x = jax.tree.map(lambda xi: xi[0], initial_state.x)
         self.integrator = gen_integrator(
-            self.logprior_and_loglik, initial_state, self.forward_mode_ad
+            self.logprior_and_loglik, proto_x, self.forward_mode_ad
         )
         return initial_state
     
@@ -99,8 +104,8 @@ def position_step(x_flat, step_size, precond_state, p_flat):
 
 # leapfrog integrator using Neal (2011, Fig. 2) trick to use only (n_steps+1)
 # gradient evaluations
-def gen_integrator(logprior_and_loglik, initial_state, forward_mode_ad):
-    unravel_fn = flatten_util.ravel_pytree(initial_state.x)[1]
+def gen_integrator(logprior_and_loglik, proto_x, forward_mode_ad):
+    unravel_fn = flatten_util.ravel_pytree(proto_x)[1]
     tempered_potential = partial(
         tempering.tempered_potential, logprior_and_loglik
     )
