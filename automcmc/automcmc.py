@@ -175,15 +175,17 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
                     "Optimizing parameters for vectorized chains is" \
                     "currently not supported."
                 )
-            settings = {}
-            if isinstance(self.optimize_init_params, dict):
-                settings=self.optimize_init_params
-                initial_params = initialization.optimize_init_params(
-                    self.logprior_and_loglik, 
-                    initial_params, 
-                    self.init_inv_temp,
-                    **settings
-                )
+            settings = (
+                self.optimize_init_params
+                if isinstance(self.optimize_init_params, dict)
+                else {}
+            )
+            initial_params = initialization.optimize_init_params(
+                self.logprior_and_loglik, 
+                initial_params, 
+                self.init_inv_temp,
+                **settings
+            )
 
         # initialize the state of the sampler
         if is_vectorized:
