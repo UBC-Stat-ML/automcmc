@@ -1,4 +1,4 @@
-from abc import ABCMeta
+from abc import ABCMeta, abstractmethod
 from collections import namedtuple
 from functools import partial
 
@@ -210,6 +210,21 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
     def model(self):
         return self._model
     
+    @abstractmethod
+    def sample_single_chain(self, state, model_args, model_kwargs):
+        """
+        Executes a single step of the Markov chain for a single chain.
+        :class:`AutoMCMC` can then leverage JAX `vmap` to automatically provide
+        vectorized sampling if `MCMC(kernel, ..., chain_method="vectorized",...)`
+        is used.
+
+        :param state: Initial `state`.
+        :param model_args: Arguments provided to the model.
+        :param model_kwargs: Keyword arguments provided to the model.
+        :return: Next `state`.
+        """
+        raise NotImplementedError()
+
     def sample(self, state, model_args, model_kwargs):
         return self._sample_fn(state, model_args, model_kwargs)
 
