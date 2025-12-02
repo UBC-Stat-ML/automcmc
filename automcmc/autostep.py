@@ -6,9 +6,7 @@ from jax import lax
 from jax import numpy as jnp
 from jax import random
 
-from automcmc import automcmc
-from automcmc import statistics
-from automcmc import utils
+from automcmc import automcmc, selectors, statistics, utils
 
 class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
     """
@@ -16,23 +14,9 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
     Liu et al. (2025).
     """
 
-    def init_alter_step_size_loop_funs(self):
-        self.shrink_step_size_cond_fun = utils.gen_alter_step_size_cond_fun(
-            self.selector.should_shrink, self.selector.max_n_iter
-        )
-        self.shrink_step_size_body_fun = utils.gen_alter_step_size_body_fun(
-            self, -1
-        )
-        self.grow_step_size_cond_fun = utils.gen_alter_step_size_cond_fun(
-            self.selector.should_grow, self.selector.max_n_iter
-        )
-        self.grow_step_size_body_fun = utils.gen_alter_step_size_body_fun(
-            self, 1
-        )
-    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.init_alter_step_size_loop_funs()
+        self._auto_step_size_fn = selectors.gen_executor(self)
 
     def step_size(self, base_step_size, exponent):
         """
@@ -73,7 +57,28 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         """
         raise NotImplementedError
     
+    def auto_step_size(self, state, selector_params, precond_state):
+        """
+        Find an appropriate step size using the criterion defined by the 
+        `selector`, and depending on the `state` and `selector parameters`.
+
+        :param state: Current state.
+        :param selector_params: The possibly randomized selector parameters of
+            the current iteration.
+        :param precond_state: Preconditioner state.
+        :return: A step size.
+        """
+        return self._auto_step_size_fn(state, selector_params, precond_state)
+    
     def sample_single_chain(self, state, model_args, model_kwargs):
+        """
+        Implements a single step of Algorithm 1 in Biron-Lattes et al. (2024).
+
+        :param state: Current state.
+        :param model_args: Arguments provided to the model.
+        :param model_kwargs: Keyword arguments provided to the model.
+        :return: The updated state.
+        """
         # generate rng keys and store the updated master key in the state
         (
             rng_key, 
@@ -179,68 +184,4 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
 
         return next_state
 
-    def auto_step_size(self, state, selector_params, precond_state):
-        init_log_joint = state.log_joint # Note: assumes the log joint value is up to date!
-        next_state = self.update_log_joint(
-            self.involution_main(state.base_step_size, state, precond_state),
-            precond_state
-        )
-        next_log_joint = next_state.log_joint
-        state = utils.copy_state_extras(next_state, state) # update state's stats and rng_key
-
-        # try shrinking (no-op if selector decides not to shrink)
-        # note: we call the output of this `state` because it should equal the 
-        # initial state except for extra fields -- stats, rng_key -- which we
-        # want to update
-        state, shrink_exponent = self.shrink_step_size(
-            state, selector_params, next_log_joint, init_log_joint, precond_state
-        )
-
-        # try growing (no-op if selector decides not to grow)
-        state, grow_exponent = self.grow_step_size(
-            state, selector_params, next_log_joint, init_log_joint, precond_state
-        )
-
-        # check only one route was taken
-        # Needs checkifying twice for some reason
-        checkify.checkify(utils.checkified_is_zero)(
-            shrink_exponent * grow_exponent
-        )[0].throw()
-
-        return state, shrink_exponent + grow_exponent
     
-    def shrink_step_size(
-            self, 
-            state, 
-            selector_params, 
-            next_log_joint, 
-            init_log_joint, 
-            precond_state
-        ):
-        exponent = 0
-        state, exponent, *_ = lax.while_loop(
-            self.shrink_step_size_cond_fun,
-            self.shrink_step_size_body_fun,
-            (state, exponent, next_log_joint, init_log_joint, 
-             selector_params, precond_state)
-        )
-        return state, exponent
-    
-    def grow_step_size(self, state, selector_params, next_log_joint, init_log_joint, precond_state):
-        exponent = 0        
-        state, exponent, *_ = lax.while_loop(
-            self.grow_step_size_cond_fun,
-            self.grow_step_size_body_fun,
-            (state, exponent, next_log_joint, init_log_joint, 
-             selector_params, precond_state)
-        )
-
-        # deduct 1 step to avoid cliffs, but only if we actually entered the 
-        # loop and didn't go over the max number of iterations
-        exponent = jnp.where(
-            jnp.logical_and(exponent > 0, exponent < self.selector.max_n_iter),
-            exponent-1, 
-            exponent
-        )
-        return state, exponent
-

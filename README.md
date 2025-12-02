@@ -76,9 +76,11 @@ as well as a minimum effective sample size of 224.57.
 ## References
 
 Biron-Lattes, M., Surjanovic, N., Syed, S., Campbell, T., & Bouchard-Côté, A.. (2024). 
-[autoMALA: Locally adaptive Metropolis-adjusted Langevin algorithm](https://proceedings.mlr.press/v238/biron-lattes24a.html). 
+[autoMALA: Locally adaptive Metropolis-adjusted Langevin algorithm](https://proceedings.mlr.press/v238/biron-lattes24a.html).
 *Proceedings of The 27th International Conference on Artificial Intelligence and Statistics*, 
 in *Proceedings of Machine Learning Research* 238:4600-4608.
 
-Liu, T., Surjanovic, N., Biron-Lattes, M., Bouchard-Côté, A., & Campbell, T. (2024). 
-[AutoStep: Locally adaptive involutive MCMC](https://openreview.net/forum?id=QUOwuRtf61). ICML 2025.
+Liu, T., Surjanovic, N., Biron-Lattes, M., Bouchard-Côté, A., & Campbell, T. (2025). 
+[AutoStep: Locally adaptive involutive MCMC](https://proceedings.mlr.press/v267/liu25br.html).
+*Proceedings of the 42nd International Conference on Machine Learning*,
+in *Proceedings of Machine Learning Research* 267:39624-39650.
