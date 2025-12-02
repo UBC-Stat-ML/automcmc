@@ -72,7 +72,8 @@ class TestKernels(unittest.TestCase):
     TESTED_SELECTORS = (
         selectors.AsymmetricSelector, 
         selectors.SymmetricSelector,
-        selectors.DeterministicSymmetricSelector
+        selectors.DeterministicSymmetricSelector,
+        selectors.MaxEJDSelector,
     )
     
     def test_involution(self):

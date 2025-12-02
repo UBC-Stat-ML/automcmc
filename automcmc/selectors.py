@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 
 import jax
 from jax import random
@@ -14,6 +14,39 @@ class StepSizeSelector(ABC):
     """
     Abstract class for defining criteria for automatically selecting step sizes
     at each Markov step.
+    """
+
+    def draw_parameters(self, rng_key):
+        """
+        Draw the random parameters used (if any) by the selector. By default
+        this returns `None`.
+
+        :param rng_key: Random number generator key.
+        :return: Random instance of the parameters used by the selector.
+        """
+        return None
+
+    @staticmethod
+    def adapt_base_step_size(base_step_size, mean_step_size, n_samples_in_round):
+        """
+        Criterion for adapting the base step size after a round of sampling.
+        
+        :param base_step_size: Previous base step size.
+        :param mean_step_size: Average step size used in the round.
+        :param n_samples_in_round: Length of the round.
+        :return: An updated base step size.
+        """
+        return mean_step_size
+    
+#######################################
+# acceptance probability bracketing
+#######################################
+
+class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
+    """
+    Class of selectors that adjust the step size by bracketing the acceptance
+    probability in a possibly randomized interval (Biron-Lattes et al. 2024, 
+    Liu et al. 2025)
 
     :param max_n_iter: Maximum number of step size doubling/halvings.
     :param bounds_sampler: A function that takes a PRNG key and samples a pair
@@ -37,7 +70,7 @@ class StepSizeSelector(ABC):
         :return: Random instance of the parameters used by the selector.
         """
         return self.bounds_sampler(rng_key)
-
+    
     @staticmethod
     @abstractmethod
     def should_grow(parameters, log_diff):
@@ -61,13 +94,9 @@ class StepSizeSelector(ABC):
         :return: `True` if step size should shrink; `False` otherwise.
         """
         raise NotImplementedError
-    
-    @staticmethod
-    def adapt_base_step_size(base_step_size, mean_step_size, n_samples_in_round):
-        return mean_step_size
-    
 
-class AsymmetricSelector(StepSizeSelector):
+
+class AsymmetricSelector(AcceptProbBracketingSelector):
     """
     Asymmetric selector.
     """
@@ -103,7 +132,7 @@ def DeterministicAsymmetricSelector(p_lo=0.01, p_hi=0.99, *args, **kwargs):
         **kwargs
     )
 
-class SymmetricSelector(StepSizeSelector):
+class SymmetricSelector(AcceptProbBracketingSelector):
     """
     Symmetric selector.
     """
@@ -134,7 +163,7 @@ def DeterministicSymmetricSelector(p_lo=0.01, p_hi=0.99, *args, **kwargs):
         **kwargs
     )
 
-class FixedStepSizeSelector(StepSizeSelector):
+class FixedStepSizeSelector(AcceptProbBracketingSelector):
     """
     A dummy selector that never adjusts the step size. 
     """
@@ -156,6 +185,17 @@ class FixedStepSizeSelector(StepSizeSelector):
     def adapt_base_step_size(base_step_size, mean_step_size, n_samples_in_round):
         return base_step_size
 
+
+#######################################
+# maximum expected jump distance
+#######################################
+
+class MaxEJDSelector(StepSizeSelector):
+
+    # just discard any arguments passed to keep it compatible with others
+    def __init__(self, *args, **kwargs):
+        pass
+
 ###############################################################################
 # executors
 ###############################################################################
@@ -166,7 +206,13 @@ def copy_state_extras(source, dest):
 DEBUG_ALTER_STEP_SIZE = None # anything other than None will print during step size loop
 
 def gen_executor(kernel):
-    return gen_target_acc_prob_executor(kernel)
+    selector = kernel.selector
+    if isinstance(selector, AcceptProbBracketingSelector):
+        return gen_target_acc_prob_executor(kernel)
+    elif isinstance(selector, MaxEJDSelector):
+        return gen_max_ejd_executor(kernel)
+    else:
+        raise ValueError(f"Selector of unknown type `{type(selector)}`")
 
 #######################################
 # acceptance probability bracketing
@@ -333,5 +379,106 @@ def gen_target_acc_prob_executor(kernel):
 
         # can add the two since one of them must be zero
         return state, shrink_exponent + grow_exponent
+    
+    return auto_step_size_fn
+
+#######################################
+# maximum expected jump distance
+#######################################
+
+def gen_max_ejd_executor(kernel):
+    
+    def expected_jump_dist(eps, state, precond_state):
+        # take the step
+        next_state = kernel.update_log_joint(
+            kernel.involution_main(eps, state, precond_state),
+            precond_state
+        )
+
+        # compute the Mahalanobis distance using the given preconditioner
+        x_flat = jax.flatten_util.ravel_pytree(state.x)[0]
+        next_x_flat = jax.flatten_util.ravel_pytree(next_state.x)[0]
+        dx = next_x_flat - x_flat
+        U = precond_state.inv_var_triu_factor
+        dx_std = U.T @ dx if jnp.ndim(U) == 2 else U * dx
+        dist = jnp.linalg.norm(dx_std)
+
+        # compute min(fwd,bwd) acc prob and return the worst-case EJD
+        log_joint_diff = next_state.log_joint-state.log_joint
+        min_acc_prob = jnp.exp(-jnp.abs(log_joint_diff))
+        state = copy_state_extras(next_state, state)
+        return state, min_acc_prob*dist
+
+    def gen_optim_ejd_funcs(kernel, direction):
+        assert direction == 1 or direction == -1
+        def cond_fn(carry):
+            e, old_ejd, new_ejd, *_ = carry
+            return jnp.logical_and(jnp.sign(e) == direction, new_ejd>old_ejd)
+
+        def body_fn(carry):
+            e, _, new_ejd, state, precond_state = carry
+            e = e + direction
+            old_ejd = new_ejd
+            eps = kernel.step_size(state.base_step_size, e)
+            state, new_ejd = expected_jump_dist(eps, state, precond_state)
+            if DEBUG_ALTER_STEP_SIZE is not None:
+                jax.debug.print(
+                    "e={}, old_ejd={}, new_ejd={}", e, old_ejd, new_ejd, ordered=True
+                )
+            return (e, old_ejd, new_ejd, state, precond_state)
+
+        return cond_fn, body_fn
+    
+    inc_cond_fn, inc_body_fn = gen_optim_ejd_funcs(kernel, 1)
+    dec_cond_fn, dec_body_fn = gen_optim_ejd_funcs(kernel, -1)
+
+    def auto_step_size_fn(state, _, precond_state):
+        # check EJD for staying put, doubling, and halving
+        base_eps = kernel.step_size(state.base_step_size, 0)
+        state, base_eps_ejd = expected_jump_dist(base_eps, state, precond_state)
+        inc_eps = kernel.step_size(state.base_step_size, 1)
+        state, inc_eps_ejd = expected_jump_dist(inc_eps, state, precond_state)
+        dec_eps = kernel.step_size(state.base_step_size, -1)
+        state, dec_eps_ejd = expected_jump_dist(dec_eps, state, precond_state)
+        
+        # check which direction gives the best improvement
+        # Note: KEY IMPLEMENTATION DETAIL
+        # argmax defaults to first elem when they are all equal. In particular, 
+        # when all(all_ejd==0), the decrease direction is selected. This is 
+        # intentional! Doing this allows the algorithm to decrease the step 
+        # size since it is clearly too agressive.  
+        all_ejd = jnp.array([dec_eps_ejd,base_eps_ejd,inc_eps_ejd])
+        imax = all_ejd.argmax()
+        new_ejd = all_ejd[imax]
+        exponent = jnp.array([-1,0,1])[imax]
+        if DEBUG_ALTER_STEP_SIZE is not None:
+            jax.debug.print(
+                "init: base_eps_ejd={}, inc_eps_ejd={}, dec_eps_ejd={}"
+                " -> e={}", base_eps_ejd, inc_eps_ejd, dec_eps_ejd, exponent,
+                ordered=True
+            )
+
+        # maybe greedily increase if doubling gave the highest EJD
+        # at the end, undo last doubling that caused a marginal decrease in EJD
+        exponent, _, new_ejd, state, precond_state = jax.lax.while_loop(
+            inc_cond_fn,
+            inc_body_fn,
+            (exponent, -1, new_ejd, state, precond_state)
+        )
+        exponent = jnp.where(exponent>0,exponent-1,exponent) # old_ejd < 0 so we always enter the loop if exponent>0
+
+        # maybe greedily decrease if halving gave the highest EJD
+        # at the end, undo last halving that caused a marginal decrease in EJD
+        exponent, _, new_ejd, state, precond_state = jax.lax.while_loop(
+            dec_cond_fn,
+            dec_body_fn,
+            (exponent, -1, new_ejd, state, precond_state) # old_ejd < 0 so we always enter the loop if exponent<0
+        )
+        exponent = jnp.where(exponent<0,exponent+1,exponent)
+
+        if DEBUG_ALTER_STEP_SIZE is not None:
+            jax.debug.print("final: e={}", exponent, ordered=True)
+
+        return state, exponent
     
     return auto_step_size_fn
