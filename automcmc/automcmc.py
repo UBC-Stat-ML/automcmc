@@ -229,10 +229,11 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         return self._sample_fn(state, model_args, model_kwargs)
 
     def get_diagnostics_str(self, state):
-        return "base_step {:.2e}, rev_rate={:.2f}, acc_prob={:.2f}".format(
+        return "bstep={:.1e}, rr={:.2f}, ap={:.2f}, lj={:.1e}".format(
             state.base_step_size,
             state.stats.adapt_stats.rev_rate, 
-            state.stats.adapt_stats.mean_acc_prob
+            state.stats.adapt_stats.mean_acc_prob,
+            state.log_joint
         )
 
     def postprocess_fn(self, model_args, model_kwargs):

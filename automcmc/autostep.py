@@ -93,13 +93,6 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         precond_state = self.preconditioner.maybe_alter_precond_state(
             state.base_precond_state, precond_key
         )
-        # jax.debug.print(
-        #     "precond_state: var={v}   chol_tril={c}   inv_fac={i}", 
-        #     ordered=True, 
-        #     v=precond_state.var,
-        #     c=precond_state.var_tril_factor,
-        #     i=precond_state.inv_var_triu_factor
-        # )
 
         # refresh auxiliary variables (e.g., momentum), update the log joint 
         # density, and finally check if the latter is finite
@@ -113,7 +106,8 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         selector_params = self.selector.draw_parameters(selector_key)
 
         # forward step size search
-        # jax.debug.print("fwd autostep: init_log_joint={i}, init_x={x}, init_v={v}", ordered=True, i=state.log_joint, x=state.x, v=state.p_flat)
+        if selectors.DEBUG_ALTER_STEP_SIZE is not None:
+            jax.debug.print("\nautostep forward:", ordered=True)
         state, fwd_exponent = self.auto_step_size(
             state, selector_params, precond_state
         )
@@ -122,10 +116,6 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
             self.involution_main(fwd_step_size, state, precond_state),
             precond_state
         )
-        # jax.debug.print(
-        #     "fwd done: step_size={s}, init_log_joint={l}, next_log_joint={ln}, log_joint_diff={ld}, prop_x={x}, prop_v={v}",
-        #     ordered=True, s=fwd_step_size, l=state.log_joint, ln=proposed_state.log_joint, 
-        #     ld=proposed_state.log_joint-state.log_joint, x=proposed_state.x, v=proposed_state.p_flat)
 
         # backward step size search
         # don't recompute log_joint for flipped state because we assume inv_aux 
@@ -133,7 +123,8 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         prop_state_flip = self.involution_aux(
             fwd_step_size, proposed_state, precond_state
         )
-        # jax.debug.print("bwd begin", ordered=True)
+        if selectors.DEBUG_ALTER_STEP_SIZE is not None:
+            jax.debug.print("autostep backward:", ordered=True)
         prop_state_flip, bwd_exponent = self.auto_step_size(
             prop_state_flip, selector_params, precond_state
         )
@@ -158,9 +149,14 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         acc_prob = lax.clamp(
             0., reversibility_passed * lax.exp(log_joint_diff), 1.
         )
-        # jax.debug.print(
-        #     "bwd done: reversibility_passed={r}, acc_prob={a}", ordered=True,
-        #     r=reversibility_passed, a=acc_prob)
+        if selectors.DEBUG_ALTER_STEP_SIZE is not None:
+            jax.debug.print(
+                "reversible? {}, acc_prob={}, fwd_step_size={}",
+                reversibility_passed,
+                acc_prob, 
+                fwd_step_size,
+                ordered=True
+            )
 
         # build the next state depending on the MH outcome
         next_state = lax.cond(
