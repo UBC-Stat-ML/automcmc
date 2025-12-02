@@ -21,6 +21,7 @@ class TestPreconditioning(unittest.TestCase):
         rng_key = random.key(2349895454)
         init_vals = jnp.ones(dim)
         S = testutils.make_const_off_diag_corr_mat(dim, rho)
+        diag_S = jnp.diag(S)
         pot_fn = testutils.make_correlated_Gaussian_potential(S)
         n_warmup, n_keep = utils.split_n_rounds(n_rounds) # translate rounds to warmup/keep
         precs = (
@@ -81,11 +82,13 @@ class TestPreconditioning(unittest.TestCase):
                             self.assertTrue(jnp.allclose(S, last_round_used_var, rtol=tol))
                             self.assertTrue(jnp.allclose(S, last_round_estimate_var, rtol=tol))
                         else:
-                            diag_S = jnp.diag(S)
                             last_round_estimate_var = mcmc.last_state.stats.adapt_stats.sample_var
                             self.assertTrue(jnp.allclose(diag_S, last_round_estimate_var, rtol=tol))
                             if not isinstance(p, preconditioning.IdentityDiagonalPreconditioner):
-                                self.assertTrue(jnp.allclose(diag_S, last_round_used_var, rtol=tol))
+                                self.assertTrue(
+                                    jnp.allclose(diag_S, last_round_used_var, rtol=tol),
+                                    f"last_round_used_var={last_round_used_var}"
+                                )
 
                 # check that Dense gives highest ess
                 self.assertEqual(all_min_ess[-1], max(all_min_ess))
