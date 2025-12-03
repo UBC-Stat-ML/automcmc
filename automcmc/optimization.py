@@ -172,8 +172,8 @@ def optimize_fun(
             **kwargs
         )
     
-    # return lbfgs if better 
-    if value_lbfgs < value_nadamw:
+    # return lbfgs if better, explicitly handle nans (nan < x != nan)
+    if jnp.isfinite(value_lbfgs) and value_lbfgs < value_nadamw:
         return opt_params_lbfgs
     else:
         return opt_params_nadamw
