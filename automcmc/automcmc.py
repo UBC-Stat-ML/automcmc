@@ -223,7 +223,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         :param model_kwargs: Keyword arguments provided to the model.
         :return: Next `state`.
         """
-        raise NotImplementedError()
+        pass
 
     def sample(self, state, model_args, model_kwargs):
         return self._sample_fn(state, model_args, model_kwargs)

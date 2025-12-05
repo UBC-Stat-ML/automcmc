@@ -16,7 +16,7 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._auto_step_size_fn = selectors.gen_executor(self)
+        self._auto_step_size_fn = self.selector.gen_executor(self)
 
     def step_size(self, base_step_size, exponent):
         """
@@ -40,7 +40,7 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         :param precond_state: Preconditioner state.
         :return: Updated state.
         """
-        raise NotImplementedError
+        pass
     
     @abstractmethod
     def involution_aux(self, step_size, state, precond_state):
@@ -55,7 +55,7 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         :param precond_state: Preconditioner state.
         :return: Updated state.
         """
-        raise NotImplementedError
+        pass
     
     def auto_step_size(self, state, selector_params, precond_state):
         """
@@ -106,7 +106,7 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         selector_params = self.selector.draw_parameters(selector_key)
 
         # forward step size search
-        if selectors.DEBUG_ALTER_STEP_SIZE is not None:
+        if selectors.DEBUG_EXECUTOR:
             jax.debug.print("\nautostep forward:", ordered=True)
         state, fwd_exponent = self.auto_step_size(
             state, selector_params, precond_state
@@ -123,7 +123,7 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         prop_state_flip = self.involution_aux(
             fwd_step_size, proposed_state, precond_state
         )
-        if selectors.DEBUG_ALTER_STEP_SIZE is not None:
+        if selectors.DEBUG_EXECUTOR:
             jax.debug.print("autostep backward:", ordered=True)
         prop_state_flip, bwd_exponent = self.auto_step_size(
             prop_state_flip, selector_params, precond_state
@@ -149,7 +149,7 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         acc_prob = lax.clamp(
             0., reversibility_passed * lax.exp(log_joint_diff), 1.
         )
-        if selectors.DEBUG_ALTER_STEP_SIZE is not None:
+        if selectors.DEBUG_EXECUTOR:
             jax.debug.print(
                 "reversible? {}, acc_prob={}, fwd_step_size={}",
                 reversibility_passed,

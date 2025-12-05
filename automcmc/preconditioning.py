@@ -87,7 +87,7 @@ class Preconditioner(ABC):
         :param rng_key: A PRNG key that could be used for random preconditioning.
         :return: A vector representing a diagonal preconditioner.
         """
-        raise NotImplementedError
+        pass
 
 #######################################
 # Diagonal
