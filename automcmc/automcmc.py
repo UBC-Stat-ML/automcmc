@@ -30,7 +30,8 @@ AutoMCMCState = namedtuple(
         "stats",
         "base_step_size",
         "base_precond_state",
-        "inv_temp"
+        "inv_temp",
+        "idiosyncratic"
     ],
 )
 """
@@ -52,6 +53,8 @@ It consists of the fields:
    round but updated at the end of it.
  - **inv_temp**: optional inverse temperature parameter to target an annealed
    version of a model's distribution.
+ - **idiosyncratic**: extra auxiliary latent variables that some kernels might
+   require.
 """
 
 class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
@@ -115,7 +118,8 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
             preconditioning.init_base_precond_state(
                 x_flat, self.preconditioner
             ),
-            None if self.init_inv_temp is None else jnp.array(self.init_inv_temp)
+            None if self.init_inv_temp is None else jnp.array(self.init_inv_temp),
+            None
         )
     
     def init_extras(self, state):
@@ -223,7 +227,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         :param model_kwargs: Keyword arguments provided to the model.
         :return: Next `state`.
         """
-        raise NotImplementedError()
+        pass
 
     def sample(self, state, model_args, model_kwargs):
         return self._sample_fn(state, model_args, model_kwargs)

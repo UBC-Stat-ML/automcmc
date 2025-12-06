@@ -129,7 +129,7 @@ def update_sampler_params(step_size_selector, args):
 
     # adapt the preconditioner
     new_base_precond_state = adapt_base_precond_state(
-        base_precond_state, adapt_stats.sample_var, n_samples_in_round
+        base_precond_state, adapt_stats
     )
 
     # # debug

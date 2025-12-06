@@ -62,18 +62,3 @@ def current_round(n_samples):
 
 def n_warmup_to_adapt_rounds(n_warmup):
     return ceil_log2(n_warmup + 2) - 1
-
-###############################################################################
-# functions used withing lax.cond to create the output state for `sample`
-###############################################################################
-
-def next_state_accepted(args):
-    _, proposed_state, bwd_state = args
-    # keep everything from proposed_state except for stats (use bwd)
-    return proposed_state._replace(stats = bwd_state.stats)
-
-def next_state_rejected(args):
-    init_state, _, bwd_state = args
-    # keep everything from init_state except for stats (use bwd)
-    return init_state._replace(stats = bwd_state.stats)
-
