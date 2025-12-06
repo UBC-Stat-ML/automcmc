@@ -19,6 +19,6 @@ class AutoRWMH(autostep.AutoStep):
         x_new = unravel_fn(x_flat + step_size * prec_p_flat)
         return state._replace(x = x_new)
     
-    def involution_aux(self, step_size, state, precond_state):
+    def involution_aux(self, state):
         return state._replace(p_flat = -state.p_flat)
 

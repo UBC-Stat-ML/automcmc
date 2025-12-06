@@ -43,16 +43,14 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         pass
     
     @abstractmethod
-    def involution_aux(self, step_size, state, precond_state):
+    def involution_aux(self, state):
         """
         Apply the auxiliary part of the involution. This is usually the part that
         is not necessary to implement for the respective involutive MCMC algorithm
         to work correctly (e.g., momentum flip in HMC).
         Note: it is assumed that the augmented target is invariant to this transformation.
 
-        :param step_size: Step size to use in the involutive transformation.
         :param state: Current state.
-        :param precond_state: Preconditioner state.
         :return: Updated state.
         """
         pass
@@ -70,6 +68,21 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         """
         return self._auto_step_size_fn(state, selector_params, precond_state)
     
+    def next_state_accepted(self, args):
+        _, proposed_state, bwd_state = args
+
+        # keep everything from proposed_state except for stats (use bwd)
+        return proposed_state._replace(stats = bwd_state.stats)
+    
+    def next_state_rejected(self, args):
+        init_state, _, bwd_state = args
+        
+        # keep everything from init_state except for stats (use bwd)
+        # then do the "flip sign" part of the involution to maintain detailed
+        # balance. This has no effect for samplers that fully refresh all the 
+        # aux variables but it is necessary for the ones that don't (AutoPCN)
+        return self.involution_aux(init_state._replace(stats = bwd_state.stats))
+
     def sample_single_chain(self, state, model_args, model_kwargs):
         """
         Implements a single step of Algorithm 1 in Biron-Lattes et al. (2024).
@@ -120,16 +133,15 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         # backward step size search
         # don't recompute log_joint for flipped state because we assume inv_aux 
         # leaves it invariant
-        prop_state_flip = self.involution_aux(
-            fwd_step_size, proposed_state, precond_state
-        )
+        prop_state_flip = self.involution_aux(proposed_state)
         if selectors.DEBUG_EXECUTOR:
             jax.debug.print("autostep backward:", ordered=True)
         prop_state_flip, bwd_exponent = self.auto_step_size(
             prop_state_flip, selector_params, precond_state
         )
         reversibility_passed = fwd_exponent == bwd_exponent
-        
+        bwd_step_size = self.step_size(state.base_step_size, bwd_exponent)
+
         # sanitize possible nan in proposed log joint, setting them to -inf
         # this may happen for some too large initial step sizes, and then 
         # `shrink_step_size` may fail to fix them before the max num of iters
@@ -161,13 +173,12 @@ class AutoStep(automcmc.AutoMCMC, metaclass=ABCMeta):
         # build the next state depending on the MH outcome
         next_state = lax.cond(
             random.bernoulli(accept_key, acc_prob),
-            utils.next_state_accepted,
-            utils.next_state_rejected,
+            self.next_state_accepted,
+            self.next_state_rejected,
             (state, proposed_state, prop_state_flip)
         )
 
         # collect statistics
-        bwd_step_size = self.step_size(state.base_step_size, bwd_exponent)
         avg_fwd_bwd_step_size = 0.5 * (fwd_step_size + bwd_step_size)
         new_stats = statistics.record_post_sample_stats(
             next_state.stats, avg_fwd_bwd_step_size, acc_prob, reversibility_passed,
