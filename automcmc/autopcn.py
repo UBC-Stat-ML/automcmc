@@ -6,9 +6,9 @@ from automcmc import autostep
 
 class AutoPCN(autostep.AutoStep):
     """
-    Involutive implementation of a finite-dimensional Preconditioned 
+    Involutive implementation of a finite-dimensional preconditioned 
     Crank-Nicolson sampler à la [1]. We do this by identifying the parameter
-    of the AR1 proposal as the sine of an angle :math:`theta\in(-pi,pi)`. This 
+    of the AR1 proposal as the sine of an angle :math:`theta\\in(-pi,pi)`. This 
     allows us to view the pCN proposal as a joint rotation of the position and 
     the Gaussian variable, which is clearly involutive if we tack on an angle
     sign flip. Note that this technically increases the set of allowed 
@@ -20,9 +20,9 @@ class AutoPCN(autostep.AutoStep):
     normal approximation to the posterior distribution using the 
     preconditioning machinery of `automcmc`.
     
-    .. note:
+    .. note::
        For implementation purposes, we handle :math:`|theta|` with the step 
-       size, whereas :math:`sgn(theta)` is stored in the idiosyncratic field
+       size, whereas :math:`sgn(theta)` is stored in the `idiosyncratic` field
        of :class:`AutoMCMCState`.
 
     .. warning:: This class is still under development.
@@ -59,14 +59,28 @@ class AutoPCN(autostep.AutoStep):
         p_flat = mean + (L @ v_flat if jnp.ndim(L) == 2 else L * v_flat)
         return state._replace(p_flat = p_flat)
     
-    # pCN as joint rotation
+    # pCN as joint rotation in standardized space
     def involution_main(self, step_size, state, precond_state):
         x_flat, unravel_fn = flatten_util.ravel_pytree(state.x)
         p_flat = state.p_flat
+        m, _, L, U = precond_state
+        
+        # standardize
+        dense = jnp.ndim(U) == 2
+        x_flat_cen = x_flat-m
+        p_flat_cen = p_flat-m
+        x_flat_std = jnp.dot(x_flat_cen, U) if dense else U * x_flat_cen # jnp.dot(v, A) == A.T @ v
+        p_flat_std = jnp.dot(p_flat_cen, U) if dense else U * p_flat_cen
+
+        # jointly rotate the standardized vectors
         theta = step_size * state.idiosyncratic
         sin_theta, cos_theta = jnp.sin(theta), jnp.cos(theta)
-        x_flat_new =  cos_theta*x_flat + sin_theta*p_flat
-        p_flat_new = -sin_theta*x_flat + cos_theta*p_flat
+        x_flat_std_new =  cos_theta*x_flat_std + sin_theta*p_flat_std
+        p_flat_std_new = -sin_theta*x_flat_std + cos_theta*p_flat_std
+
+        # undo standardization, update state, and return
+        x_flat_new = m + (L @ x_flat_std_new if dense else L * x_flat_std_new)
+        p_flat_new = m + (L @ p_flat_std_new if dense else L * p_flat_std_new)
         return state._replace(x = unravel_fn(x_flat_new), p_flat = p_flat_new)
     
     # flip theta sign
