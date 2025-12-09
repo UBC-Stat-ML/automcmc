@@ -53,6 +53,7 @@ from jax import numpy as jnp
 PreconditionerState = namedtuple(
     "PreconditionerState",
     [
+        "mean",
         "var",
         "var_tril_factor",
         "inv_var_triu_factor"
@@ -62,6 +63,7 @@ PreconditionerState = namedtuple(
 A :func:`~collections.namedtuple` defining the values associated with a 
 preconditioner. It consists of the fields:
 
+ - **mean** - Estimated target mean.
  - **var** - Estimated and regularized target variance.
  - **var_tril_factor** - A lower-triangular (tril) matrix `L` such that 
      `var == L @ L.T`.
@@ -87,7 +89,7 @@ class Preconditioner(ABC):
         :param rng_key: A PRNG key that could be used for random preconditioning.
         :return: A vector representing a diagonal preconditioner.
         """
-        raise NotImplementedError
+        pass
 
 #######################################
 # Diagonal
@@ -98,7 +100,7 @@ class IdentityDiagonalPreconditioner(Preconditioner):
     @staticmethod
     def maybe_alter_precond_state(precond_state, rng_key):
         I = jnp.ones_like(precond_state.var)
-        return PreconditionerState(I, I, I)
+        return PreconditionerState(precond_state.mean, I, I, I)
 
 class FixedDiagonalPreconditioner(Preconditioner):
 
@@ -127,12 +129,13 @@ def is_dense(preconditioner):
 
 # initialization
 def init_base_precond_state(prototype_x_flat, preconditioner):
+    zeros = jnp.zeros_like(prototype_x_flat)
     if is_dense(preconditioner):
         I = jnp.identity(prototype_x_flat.shape[0],prototype_x_flat.dtype)
-        return PreconditionerState(I, I, I)
+        return PreconditionerState(zeros, I, I, I)
     else: 
         ones = jnp.ones_like(prototype_x_flat)
-        return PreconditionerState(ones, ones, ones)
+        return PreconditionerState(zeros, ones, ones, ones)
 
 def fix_cond_number(sample_var):
     eps = jnp.finfo(sample_var.dtype).eps
@@ -153,7 +156,9 @@ def fix_cond_number(sample_var):
 
 # adapt the base preconditioner state, regularizing to avoid issues with
 # ill-conditioned sample variances
-def adapt_base_precond_state(base_precond_state, sample_var, n_samples):
+def adapt_base_precond_state(base_precond_state, adapt_stats):
+    n_samples = adapt_stats.sample_idx
+    sample_var = adapt_stats.sample_var
     corrected_sample_var = fix_cond_number(sample_var)
 
     # new variance as weighted average of old and corrected sample var
@@ -175,4 +180,6 @@ def adapt_base_precond_state(base_precond_state, sample_var, n_samples):
         var_tril_factor = jnp.sqrt(var)
         inv_var_triu_factor = jnp.reciprocal(var_tril_factor)
 
-    return PreconditionerState(var, var_tril_factor, inv_var_triu_factor)
+    return PreconditionerState(
+        adapt_stats.sample_mean, var, var_tril_factor, inv_var_triu_factor
+    )

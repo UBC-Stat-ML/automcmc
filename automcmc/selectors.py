@@ -81,7 +81,7 @@ class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
         :param parameters: selector parameters.
         :return: `True` if step size should grow; `False` otherwise.
         """
-        raise NotImplementedError
+        pass
 
     @staticmethod
     @abstractmethod
@@ -93,7 +93,10 @@ class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
         :param parameters: selector parameters.
         :return: `True` if step size should shrink; `False` otherwise.
         """
-        raise NotImplementedError
+        pass
+
+    def gen_executor(self, kernel):
+        return gen_target_acc_prob_executor(kernel)
 
 
 class AsymmetricSelector(AcceptProbBracketingSelector):
@@ -196,6 +199,9 @@ class MaxEJDSelector(StepSizeSelector):
     def __init__(self, *args, **kwargs):
         pass
 
+    def gen_executor(self, kernel):
+        return gen_max_ejd_executor(kernel)
+
 ###############################################################################
 # executors
 ###############################################################################
@@ -203,16 +209,7 @@ class MaxEJDSelector(StepSizeSelector):
 def copy_state_extras(source, dest):
     return dest._replace(stats = source.stats, rng_key = source.rng_key)
 
-DEBUG_ALTER_STEP_SIZE = None # anything other than None will print during step size loop
-
-def gen_executor(kernel):
-    selector = kernel.selector
-    if isinstance(selector, AcceptProbBracketingSelector):
-        return gen_target_acc_prob_executor(kernel)
-    elif isinstance(selector, MaxEJDSelector):
-        return gen_max_ejd_executor(kernel)
-    else:
-        raise ValueError(f"Selector of unknown type `{type(selector)}`")
+DEBUG_EXECUTOR = False
 
 #######################################
 # acceptance probability bracketing
@@ -262,7 +259,7 @@ def gen_alter_step_size_body_fun(kernel, direction):
         state = copy_state_extras(next_state, state)
 
         # maybe print debug info
-        if DEBUG_ALTER_STEP_SIZE is not None:
+        if DEBUG_EXECUTOR:
             jax.debug.print(
                 "dir: {d: d}: base: {bs:.8f} + exp: {e: d} = eps: {s:.8f} | (L0, L1, DL, NDL): ({l0: .2f},{l1: .2f},{dl: .2f},{ndl: .2f}) | bounds: ({a:.3f},{b:.3f})", 
                 ordered=True,
@@ -421,7 +418,7 @@ def gen_max_ejd_executor(kernel):
             old_ejd = new_ejd
             eps = kernel.step_size(state.base_step_size, e)
             state, new_ejd = expected_jump_dist(eps, state, precond_state)
-            if DEBUG_ALTER_STEP_SIZE is not None:
+            if DEBUG_EXECUTOR:
                 jax.debug.print(
                     "e={}, old_ejd={}, new_ejd={}", e, old_ejd, new_ejd, ordered=True
                 )
@@ -451,7 +448,7 @@ def gen_max_ejd_executor(kernel):
         imax = all_ejd.argmax()
         new_ejd = all_ejd[imax]
         exponent = jnp.array([-1,0,1])[imax]
-        if DEBUG_ALTER_STEP_SIZE is not None:
+        if DEBUG_EXECUTOR:
             jax.debug.print(
                 "init: base_eps_ejd={}, inc_eps_ejd={}, dec_eps_ejd={}"
                 " -> e={}", base_eps_ejd, inc_eps_ejd, dec_eps_ejd, exponent,
@@ -476,7 +473,7 @@ def gen_max_ejd_executor(kernel):
         )
         exponent = jnp.where(exponent<0,exponent+1,exponent)
 
-        if DEBUG_ALTER_STEP_SIZE is not None:
+        if DEBUG_EXECUTOR:
             jax.debug.print("final: e={}", exponent, ordered=True)
 
         return state, exponent

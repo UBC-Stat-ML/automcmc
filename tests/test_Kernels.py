@@ -12,9 +12,7 @@ from jax import numpy as jnp
 
 from numpyro.infer import MCMC
 
-from automcmc import autohmc
-from automcmc import autorwmh
-from automcmc import slicer
+from automcmc import autohmc,autorwmh,slicer
 from automcmc import preconditioning
 from automcmc import selectors
 from automcmc import statistics
@@ -60,7 +58,7 @@ class TestKernels(unittest.TestCase):
         autorwmh.AutoRWMH,
         autohmc.AutoMALA,
         autohmc.AutoHMC,
-        slicer.HitAndRunSliceSampler
+        slicer.HitAndRunSliceSampler,
     )
 
     TESTED_PRECONDITIONERS = (
@@ -100,9 +98,9 @@ class TestKernels(unittest.TestCase):
                         precond_state = s.base_precond_state
                         step_size = s.base_step_size
                         s_half = kernel.involution_main(step_size, s, precond_state)
-                        s_one = kernel.involution_aux(step_size, s_half, precond_state)
+                        s_one = kernel.involution_aux(s_half)
                         s_onehalf = kernel.involution_main(step_size, s_one, precond_state)
-                        s_two = kernel.involution_aux(step_size, s_onehalf, precond_state)
+                        s_two = kernel.involution_aux(s_onehalf)
                         self.assertTrue(
                             jnp.allclose(s_two.x, s.x, atol=tol, rtol=tol),
                             msg=f"s.x={s.x} but s_two.x={s_two.x}"

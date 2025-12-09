@@ -54,7 +54,7 @@ class AutoHMC(autostep.AutoStep):
             step_size, state, precond_state, self.n_leapfrog_steps
         )
     
-    def involution_aux(self, step_size, state, precond_state):
+    def involution_aux(self, state):
         return state._replace(p_flat = -state.p_flat)
 
 
