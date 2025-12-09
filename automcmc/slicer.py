@@ -7,9 +7,10 @@ from jax import numpy as jnp
 from jax import lax
 from jax import random
 
-from automcmc import automcmc, statistics
+from automcmc import statistics
+from automcmc.automcmc import AutoMCMC
 
-class SliceSampler(automcmc.AutoMCMC, metaclass=ABCMeta):
+class SliceSampler(AutoMCMC, metaclass=ABCMeta):
     """
     Interface for defining slice sampling algorithms that leverage the 
     univariate algorithm of Neal (2003). The `p_flat` component of the
