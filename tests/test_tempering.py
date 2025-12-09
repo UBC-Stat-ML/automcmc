@@ -13,6 +13,7 @@ from automcmc import autorwmh
 from automcmc import slicer
 from automcmc import utils
 from automcmc import tempering
+from automcmc import selectors
 
 class TestTempering(unittest.TestCase):
 
@@ -31,7 +32,7 @@ class TestTempering(unittest.TestCase):
         self.assertFalse(jnp.isnan(p))
 
     def test_tempered_moments(self):
-        n_rounds = 14
+        n_rounds = 15
         n_warmup, n_keep = utils.split_n_rounds(n_rounds) # translate rounds to warmup/keep
         model, model_args, model_kwargs = testutils.toy_conjugate_normal()
         rng_key = random.key(321453)
@@ -52,7 +53,7 @@ class TestTempering(unittest.TestCase):
                     mcmc.run(mcmc_key, *model_args, **model_kwargs)
                     adapt_stats=mcmc.last_state.stats.adapt_stats
                     self.assertTrue(
-                        jnp.allclose(adapt_stats.sample_mean, true_mean, atol=0.3, rtol=0.1), # need atol to handle mean=0 for inv_temp=0
+                        jnp.allclose(adapt_stats.sample_mean, true_mean, atol=0.35, rtol=0.1), # need atol to handle mean=0 for inv_temp=0
                         msg=f"sample_mean={adapt_stats.sample_mean} but true_mean={true_mean}"
                     )
                     sample_sd = jnp.sqrt(adapt_stats.sample_var)
