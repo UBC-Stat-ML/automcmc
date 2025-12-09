@@ -52,7 +52,8 @@ class TestTempering(unittest.TestCase):
                     mcmc.run(mcmc_key, *model_args, **model_kwargs)
                     adapt_stats=mcmc.last_state.stats.adapt_stats
                     self.assertTrue(
-                        jnp.allclose(adapt_stats.sample_mean, true_mean, atol=0.3, rtol=0.1) # need atol to handle mean=0 for inv_temp=0
+                        jnp.allclose(adapt_stats.sample_mean, true_mean, atol=0.3, rtol=0.1), # need atol to handle mean=0 for inv_temp=0
+                        msg=f"sample_mean={adapt_stats.sample_mean} but true_mean={true_mean}"
                     )
                     sample_sd = jnp.sqrt(adapt_stats.sample_var)
                     self.assertTrue(
