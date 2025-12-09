@@ -12,7 +12,7 @@ from jax import numpy as jnp
 
 from numpyro.infer import MCMC
 
-from automcmc import autohmc,autorwmh,slicer,autopcn
+from automcmc import autohmc,autorwmh,slicer
 from automcmc import preconditioning
 from automcmc import selectors
 from automcmc import statistics
@@ -59,7 +59,6 @@ class TestKernels(unittest.TestCase):
         autohmc.AutoMALA,
         autohmc.AutoHMC,
         slicer.HitAndRunSliceSampler,
-        autopcn.AutoPCN
     )
 
     TESTED_PRECONDITIONERS = (
