@@ -58,6 +58,7 @@ class TestKernels(unittest.TestCase):
         autorwmh.AutoRWMH,
         autohmc.AutoMALA,
         autohmc.AutoHMC,
+        autopcn.AutoPCN,
         slicer.HitAndRunSliceSampler,
     )
 
@@ -79,7 +80,7 @@ class TestKernels(unittest.TestCase):
         tol = jnp.sqrt(jnp.finfo(init_val.dtype).eps)
         n_warmup = utils.split_n_rounds(10)[0]
         rng_key = random.key(321)
-        for kernel_class in (autopcn.AutoPCN, *self.TESTED_KERNELS): # only test PCN here
+        for kernel_class in self.TESTED_KERNELS: # only test PCN here
             if kernel_class is slicer.HitAndRunSliceSampler: # not involutive
                 continue
             for prec in self.TESTED_PRECONDITIONERS:
@@ -135,7 +136,11 @@ class TestKernels(unittest.TestCase):
         for kernel_class in self.TESTED_KERNELS:
             for prec in self.TESTED_PRECONDITIONERS:
                 for sel in self.TESTED_SELECTORS:
+                    # selectors don't make a difference for non-AutoStep samplers
                     if kernel_class is slicer.HitAndRunSliceSampler and (sel is not selectors.DeterministicSymmetricSelector):
+                        continue
+                    # AutoPCN only works with the MaxEJD selector
+                    if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
                         continue
                     for max_n_iter in max_n_iters:
                         with self.subTest(
@@ -178,8 +183,12 @@ class TestKernels(unittest.TestCase):
         tol = 0.2
         for kernel_class in self.TESTED_KERNELS:
             for sel in self.TESTED_SELECTORS:
+                # selectors don't make a difference for non-AutoStep samplers
                 if kernel_class is slicer.HitAndRunSliceSampler and (sel is not selectors.DeterministicSymmetricSelector):
                         continue
+                # AutoPCN only works with the MaxEJD selector
+                if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
+                    continue
                 with self.subTest(kernel_class=kernel_class, sel_type=sel):
                     print(f"kernel_class={kernel_class}, sel_type={sel}")
                     rng_key, run_key = random.split(rng_key)
@@ -217,15 +226,17 @@ class TestKernels(unittest.TestCase):
         n_rounds = 14
         n_warmup, n_keep = utils.split_n_rounds(n_rounds)
         for kernel_class in self.TESTED_KERNELS:
-            for prec in self.TESTED_PRECONDITIONERS:
-                if isinstance(prec, preconditioning.IdentityDiagonalPreconditioner):
-                    # doesnt work
-                    continue
+            # id precond doesnt work here
+            for prec in (p for p in self.TESTED_PRECONDITIONERS if p is not preconditioning.IdentityDiagonalPreconditioner):
                 for sel in self.TESTED_SELECTORS:
+                    # selectors don't make a difference for non-AutoStep samplers
                     if kernel_class is slicer.HitAndRunSliceSampler and (sel is not selectors.DeterministicSymmetricSelector):
                         continue
-                    if sel is selectors.AsymmetricSelector:
-                        # doesnt work with automala here
+                    # # doesnt work with automala here
+                    # if sel is selectors.AsymmetricSelector:
+                    #     continue
+                    # AutoPCN only works with the MaxEJD selector
+                    if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
                         continue
                     with self.subTest(kernel_class=kernel_class, prec_type=type(prec), sel_type=sel):
                         print(f"kernel_class={kernel_class}, prec_type={type(prec)}, sel_type={sel}")
