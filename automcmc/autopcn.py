@@ -2,7 +2,7 @@ from jax import flatten_util
 from jax import numpy as jnp
 from jax import random
 
-from automcmc import autostep
+from automcmc import autostep, selectors
 
 class AutoPCN(autostep.AutoStep):
     """
@@ -32,56 +32,59 @@ class AutoPCN(autostep.AutoStep):
     *Statistical Science*, 424-446.
     """
 
+    def __init__(
+            self, 
+            *args, 
+            selector = selectors.MaxEJDSelector(),
+            **kwargs
+        ):
+        super().__init__(*args, selector=selector, **kwargs)
+        self._auto_step_size_fn = self.selector.gen_executor(self)
+
+
     # use the optional `idiosyncratic` field to store the sign of the angle
     def init_extras(self, state):
         return state._replace(
             idiosyncratic = jnp.ones((), state.base_step_size.dtype)
         )
     
-    # compute kinetic energy for p under N(m, S). Recall that we have U s.t.
+    # compute kinetic energy for p ~ N(m, S). Recall that we have U s.t.
     #   UU^T = S^{-1}
     # So the kinetic energy is
     #   0.5 (p-m)^T S^{-1} (p-m) = 0.5 (p-m)^T(UU^T)(p-m) = 0.5 v^Tv
-    # where v:=U^T(p-m) (the corresponding N(0,I) variable since U=chol(S)^{-T})
+    # where v:=U^T(p-m), which is the actual variable we carry around
+    # Note: we cannot skip this step like in AutoRWMH because the pCN 
+    # involution does affect the momentum variable
     def kinetic_energy(self, state, precond_state):
-        cent_p_flat = state.p_flat - precond_state.mean
-        U = precond_state.inv_var_triu_factor
-        v_flat = jnp.dot(cent_p_flat, U) if jnp.ndim(U) == 2 else U * cent_p_flat # A.T @ x == jnp.dot(x,A)
+        v_flat = state.p_flat
         return 0.5*jnp.dot(v_flat, v_flat)
     
     # sample p ~ N(m,S), where m and S are the approx posterior mean and 
     # covariance, respectively. Equivalent to v~N(0,I) and p = m + Lv, with 
-    # LL^T = S
+    # LL^T = S. Thus, we instead draw v and store it in `p_flat`
     def refresh_aux_vars(self, rng_key, state, precond_state):
         v_flat = random.normal(rng_key, jnp.shape(state.p_flat))
-        mean = precond_state.mean
-        L = precond_state.var_tril_factor
-        p_flat = mean + (L @ v_flat if jnp.ndim(L) == 2 else L * v_flat)
-        return state._replace(p_flat = p_flat)
+        return state._replace(p_flat = v_flat)
     
     # pCN as joint rotation in standardized space
     def involution_main(self, step_size, state, precond_state):
         x_flat, unravel_fn = flatten_util.ravel_pytree(state.x)
-        p_flat = state.p_flat
+        v_flat = state.p_flat
         m, _, L, U = precond_state
         
         # standardize
         dense = jnp.ndim(U) == 2
-        x_flat_cen = x_flat-m
-        p_flat_cen = p_flat-m
-        x_flat_std = jnp.dot(x_flat_cen, U) if dense else U * x_flat_cen # jnp.dot(v, A) == A.T @ v
-        p_flat_std = jnp.dot(p_flat_cen, U) if dense else U * p_flat_cen
+        x_flat_std = jnp.dot(x_flat-m, U) if dense else U * (x_flat-m) # jnp.dot(v, A) == A.T @ v
 
         # jointly rotate the standardized vectors
         theta = step_size * state.idiosyncratic
         sin_theta, cos_theta = jnp.sin(theta), jnp.cos(theta)
-        x_flat_std_new =  cos_theta*x_flat_std + sin_theta*p_flat_std
-        p_flat_std_new = -sin_theta*x_flat_std + cos_theta*p_flat_std
+        x_flat_std_new =  cos_theta*x_flat_std + sin_theta*v_flat
+        v_flat_new     = -sin_theta*x_flat_std + cos_theta*v_flat
 
         # undo standardization, update state, and return
         x_flat_new = m + (L @ x_flat_std_new if dense else L * x_flat_std_new)
-        p_flat_new = m + (L @ p_flat_std_new if dense else L * p_flat_std_new)
-        return state._replace(x = unravel_fn(x_flat_new), p_flat = p_flat_new)
+        return state._replace(x = unravel_fn(x_flat_new), p_flat = v_flat_new)
     
     # flip theta sign
     def involution_aux(self, state):

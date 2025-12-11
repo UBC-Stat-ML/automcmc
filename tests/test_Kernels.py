@@ -12,7 +12,7 @@ from jax import numpy as jnp
 
 from numpyro.infer import MCMC
 
-from automcmc import autohmc,autorwmh,slicer
+from automcmc import autohmc,autorwmh,slicer, autopcn
 from automcmc import preconditioning
 from automcmc import selectors
 from automcmc import statistics
@@ -75,15 +75,17 @@ class TestKernels(unittest.TestCase):
     )
     
     def test_involution(self):
-        tol = 1e-5
         init_val = jnp.array([1., 2.])
+        tol = jnp.sqrt(jnp.finfo(init_val.dtype).eps)
         n_warmup = utils.split_n_rounds(10)[0]
         rng_key = random.key(321)
-        for kernel_class in self.TESTED_KERNELS:
+        for kernel_class in (autopcn.AutoPCN, *self.TESTED_KERNELS): # only test PCN here
             if kernel_class is slicer.HitAndRunSliceSampler: # not involutive
                 continue
             for prec in self.TESTED_PRECONDITIONERS:
                 for sel in self.TESTED_SELECTORS:
+                    if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
+                        continue
                     with self.subTest(kernel_class=kernel_class, prec_type=type(prec), sel_type=sel):
                         print(f"kernel_class={kernel_class}, prec_type={type(prec)}, sel_type={sel}")
                         rng_key, run_key = random.split(rng_key)
@@ -96,7 +98,7 @@ class TestKernels(unittest.TestCase):
                         mcmc.run(run_key, init_params=init_val)
                         s = mcmc.last_state
                         precond_state = s.base_precond_state
-                        step_size = s.base_step_size
+                        step_size = s.base_step_size/2 # avoid dealing with HMC flying off to infty
                         s_half = kernel.involution_main(step_size, s, precond_state)
                         s_one = kernel.involution_aux(s_half)
                         s_onehalf = kernel.involution_main(step_size, s_one, precond_state)
@@ -109,6 +111,12 @@ class TestKernels(unittest.TestCase):
                             jnp.allclose(s_two.p_flat, s.p_flat, atol=tol, rtol=tol),
                             msg=f"s.p_flat={s.p_flat} but s_two.p_flat={s_two.p_flat}"
                         )
+                        if s.idiosyncratic is not None:
+                            self.assertTrue(
+                                jnp.allclose(s_two.idiosyncratic, s.idiosyncratic, atol=tol, rtol=tol),
+                                msg=f"s.idiosyncratic={s.idiosyncratic} but "\
+                                    f"s_two.idiosyncratic={s_two.idiosyncratic}"
+                            )
 
     # invariance test on an isotropic multivariate normal
     def test_invariance(self):
