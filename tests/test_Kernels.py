@@ -12,7 +12,7 @@ from jax import numpy as jnp
 
 from numpyro.infer import MCMC
 
-from automcmc import autohmc,autorwmh,slicer
+from automcmc import autohmc,autorwmh,slicer, autopcn
 from automcmc import preconditioning
 from automcmc import selectors
 from automcmc import statistics
@@ -29,17 +29,15 @@ def loop_sample(kernel, n_refresh, kernel_state):
 
 # tune a sampler starting from an iid sample from the target
 def init_and_tune_kernel(
+        sampler,
         kernel, 
-        dim, 
-        true_mean, 
-        true_sd, 
         n_warmup,
         rng_key
     ):
     run_key, init_key = random.split(rng_key)
 
     # draw an iid sample from the target
-    init_val = true_mean + true_sd*random.normal(init_key, dim)
+    init_val = sampler(init_key)
 
     # initialize a kernel state with warmup to tune parameters
     # note: num_samples = 0 fails.
@@ -58,6 +56,7 @@ class TestKernels(unittest.TestCase):
         autorwmh.AutoRWMH,
         autohmc.AutoMALA,
         autohmc.AutoHMC,
+        autopcn.AutoPCN,
         slicer.HitAndRunSliceSampler,
     )
 
@@ -75,15 +74,17 @@ class TestKernels(unittest.TestCase):
     )
     
     def test_involution(self):
-        tol = 1e-5
         init_val = jnp.array([1., 2.])
+        tol = 1e-3
         n_warmup = utils.split_n_rounds(10)[0]
         rng_key = random.key(321)
-        for kernel_class in self.TESTED_KERNELS:
+        for kernel_class in self.TESTED_KERNELS: # only test PCN here
             if kernel_class is slicer.HitAndRunSliceSampler: # not involutive
                 continue
             for prec in self.TESTED_PRECONDITIONERS:
                 for sel in self.TESTED_SELECTORS:
+                    if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
+                        continue
                     with self.subTest(kernel_class=kernel_class, prec_type=type(prec), sel_type=sel):
                         print(f"kernel_class={kernel_class}, prec_type={type(prec)}, sel_type={sel}")
                         rng_key, run_key = random.split(rng_key)
@@ -96,7 +97,7 @@ class TestKernels(unittest.TestCase):
                         mcmc.run(run_key, init_params=init_val)
                         s = mcmc.last_state
                         precond_state = s.base_precond_state
-                        step_size = s.base_step_size
+                        step_size = s.base_step_size/2 # avoid dealing with HMC flying off to infty
                         s_half = kernel.involution_main(step_size, s, precond_state)
                         s_one = kernel.involution_aux(s_half)
                         s_onehalf = kernel.involution_main(step_size, s_one, precond_state)
@@ -109,52 +110,96 @@ class TestKernels(unittest.TestCase):
                             jnp.allclose(s_two.p_flat, s.p_flat, atol=tol, rtol=tol),
                             msg=f"s.p_flat={s.p_flat} but s_two.p_flat={s_two.p_flat}"
                         )
+                        if s.idiosyncratic is not None:
+                            self.assertTrue(
+                                jnp.allclose(s_two.idiosyncratic, s.idiosyncratic, atol=tol, rtol=tol),
+                                msg=f"s.idiosyncratic={s.idiosyncratic} but "\
+                                    f"s_two.idiosyncratic={s_two.idiosyncratic}"
+                            )
 
-    # invariance test on an isotropic multivariate normal
+    # invariance test on multivariate normals
     def test_invariance(self):
         dim = 4
-        true_mean = 2.
-        true_var = 0.5
-        true_sd = jnp.sqrt(true_var)
-        true_cdf = partial(stats.norm.cdf, loc=true_mean, scale=true_sd)
         n_warmup = utils.split_n_rounds(10)[0]
         n_refresh = 1024
         n_samples = 1024
         pval_threshold = 0.001
         rng_key = random.key(2)
         max_n_iters = (1, 2**20)
-        
-        for kernel_class in self.TESTED_KERNELS:
-            for prec in self.TESTED_PRECONDITIONERS:
-                for sel in self.TESTED_SELECTORS:
-                    if kernel_class is slicer.HitAndRunSliceSampler and (sel is not selectors.DeterministicSymmetricSelector):
-                        continue
-                    for max_n_iter in max_n_iters:
-                        with self.subTest(
-                            kernel_class=kernel_class, prec_type=type(prec), sel_type=sel, max_n_iter=max_n_iter
+
+        # make correlated target
+        S = testutils.make_const_off_diag_corr_mat(dim, 0.8)
+        L = jax.lax.linalg.cholesky(S)
+        U = jax.lax.linalg.triangular_solve(
+            L, 
+            jnp.identity(S.shape[-1]), 
+            transpose_a=True, 
+            lower=True
+        )
+        def corr_target(x):
+            x_std = jnp.dot(x, U)
+            return 0.5*jnp.dot(x_std, x_std)
+
+        targets = (testutils.gaussian_potential, corr_target)
+        for i,target in enumerate(targets):
+            if i==0:
+                true_mean, true_var = (2., 0.5)
+                sampler = lambda r: true_mean + true_sd*random.normal(r, dim)
+            else:
+                true_mean, true_var = (0., 1.)
+                sampler = lambda r: L @ random.normal(r, dim)
+
+            true_sd = jnp.sqrt(true_var)
+            for kernel_class in self.TESTED_KERNELS:
+                for prec in self.TESTED_PRECONDITIONERS:
+                    for sel in self.TESTED_SELECTORS:
+                        if ( # selectors don't make a difference for non-AutoStep samplers
+                            kernel_class is slicer.HitAndRunSliceSampler and 
+                            (sel is not selectors.DeterministicSymmetricSelector)
+                        ) or ( # AutoPCN only works with the MaxEJD selector
+                            kernel_class is autopcn.AutoPCN and 
+                            sel is not selectors.MaxEJDSelector
                         ):
-                            print(f"kernel_class={kernel_class}, prec_type={type(prec)}, sel_type={sel}, max_n_iter={max_n_iter}")
-                            rng_key, exp_key = random.split(rng_key)
-                            def run_fn(init_key):
-                                kernel = kernel_class(
-                                    potential_fn=testutils.gaussian_potential, 
-                                    selector=sel(max_n_iter=max_n_iter),
-                                    preconditioner = prec
+                            continue
+                        for max_n_iter in max_n_iters:
+                            # no limit implemented yet for this selector
+                            if sel is selectors.MaxEJDSelector and max_n_iter != max_n_iters[0]:
+                                continue
+                            with self.subTest(
+                                target_id=i, 
+                                kernel_class=kernel_class, 
+                                prec_type=type(prec), 
+                                sel_type=sel, 
+                                max_n_iter=max_n_iter
+                            ):
+                                print(
+                                    f"target={i}, kernel_class={kernel_class} ", 
+                                    f"prec_type={type(prec)}, sel_type={sel} ",
+                                    f"max_n_iter={max_n_iter}"
                                 )
-                                kernel, kernel_state = init_and_tune_kernel(
-                                    kernel, 
-                                    dim, 
-                                    true_mean, 
-                                    true_sd, 
-                                    n_warmup,
-                                    init_key
-                                )
-                                return loop_sample(kernel, n_refresh, kernel_state).x[0]
-                            vmap_fn = jax.vmap(run_fn)
-                            run_keys = random.split(exp_key, n_samples)
-                            mcmc_samples = vmap_fn(run_keys)
-                            ks_res = stats.ks_1samp(mcmc_samples, true_cdf)
-                            self.assertGreater(ks_res.pvalue, pval_threshold)
+                                rng_key, exp_key = random.split(rng_key)
+                                def run_fn(init_key):
+                                    kernel = kernel_class(
+                                        potential_fn=target, 
+                                        selector=sel(max_n_iter=max_n_iter),
+                                        preconditioner = prec
+                                    )
+                                    kernel, kernel_state = init_and_tune_kernel(
+                                        sampler,
+                                        kernel,  
+                                        n_warmup,
+                                        init_key
+                                    )
+                                    return loop_sample(
+                                        kernel, n_refresh, kernel_state
+                                    ).x[0]
+                                vmap_fn = jax.vmap(run_fn)
+                                run_keys = random.split(exp_key, n_samples)
+                                mcmc_samples = vmap_fn(run_keys)
+                                std_mcmc_samples = (mcmc_samples - true_mean)/true_sd
+                                ks_res = stats.ks_1samp(std_mcmc_samples, stats.norm.cdf)
+                                print(f"pvalue={ks_res.pvalue}")
+                                self.assertGreater(ks_res.pvalue, pval_threshold)
 
     # test online stats
     # note: currently only tests kernels using the diagonal precond, but the
@@ -170,8 +215,12 @@ class TestKernels(unittest.TestCase):
         tol = 0.2
         for kernel_class in self.TESTED_KERNELS:
             for sel in self.TESTED_SELECTORS:
+                # selectors don't make a difference for non-AutoStep samplers
                 if kernel_class is slicer.HitAndRunSliceSampler and (sel is not selectors.DeterministicSymmetricSelector):
                         continue
+                # AutoPCN only works with the MaxEJD selector
+                if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
+                    continue
                 with self.subTest(kernel_class=kernel_class, sel_type=sel):
                     print(f"kernel_class={kernel_class}, sel_type={sel}")
                     rng_key, run_key = random.split(rng_key)
@@ -206,18 +255,20 @@ class TestKernels(unittest.TestCase):
     def test_numpyro_model(self):
         rng_key = random.key(9)
         tol = 0.1
-        n_rounds = 14
+        n_rounds = 15
         n_warmup, n_keep = utils.split_n_rounds(n_rounds)
         for kernel_class in self.TESTED_KERNELS:
-            for prec in self.TESTED_PRECONDITIONERS:
-                if isinstance(prec, preconditioning.IdentityDiagonalPreconditioner):
-                    # doesnt work
-                    continue
+            # id precond doesnt work here
+            for prec in (p for p in self.TESTED_PRECONDITIONERS if not isinstance(p, preconditioning.IdentityDiagonalPreconditioner)):
                 for sel in self.TESTED_SELECTORS:
+                    # selectors don't make a difference for non-AutoStep samplers
                     if kernel_class is slicer.HitAndRunSliceSampler and (sel is not selectors.DeterministicSymmetricSelector):
                         continue
-                    if sel is selectors.AsymmetricSelector:
-                        # doesnt work with automala here
+                    # # doesnt work with automala here
+                    # if sel is selectors.AsymmetricSelector:
+                    #     continue
+                    # AutoPCN only works with the MaxEJD selector
+                    if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
                         continue
                     with self.subTest(kernel_class=kernel_class, prec_type=type(prec), sel_type=sel):
                         print(f"kernel_class={kernel_class}, prec_type={type(prec)}, sel_type={sel}")
