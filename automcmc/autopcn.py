@@ -66,15 +66,16 @@ class AutoPCN(autostep.AutoStep):
         v_flat = random.normal(rng_key, jnp.shape(state.p_flat))
         return state._replace(p_flat = v_flat)
     
-    # pCN as joint rotation in standardized space
+    # pCN as joint elliptical rotation (along circle in standardized space)
     def involution_main(self, step_size, state, precond_state):
         x_flat, unravel_fn = flatten_util.ravel_pytree(state.x)
         v_flat = state.p_flat
         m, _, L, U = precond_state
         
-        # standardize
+        # standardize x
         dense = jnp.ndim(U) == 2
-        x_flat_std = jnp.dot(x_flat-m, U) if dense else U * (x_flat-m) # jnp.dot(v, A) == A.T @ v
+        x_flat_cen = x_flat-m
+        x_flat_std = jnp.dot(x_flat_cen, U) if dense else U * x_flat_cen # jnp.dot(v, A) == A.T @ v
 
         # jointly rotate the standardized vectors
         theta = step_size * state.idiosyncratic
