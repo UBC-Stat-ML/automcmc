@@ -136,9 +136,13 @@ def gen_integrator(logprior_and_loglik, proto_x, forward_mode_ad):
     
     def integrator(step_size, state, precond_state, n_steps):
         # jax.debug.print("start: step_size={s}, precond_state={d}", ordered=True, s=step_size, d=precond_state)
+        # explicitly unpack state: avoid using tuple unpacking as it breaks
+        # when the definition of `state` changes
+        x = state.x
+        p_flat = state.p_flat
+        inv_temp = state.inv_temp
 
         # first velocity half-step
-        x, p_flat, *_, inv_temp = state
         x_flat    = flatten_util.ravel_pytree(x)[0]
         grad_flat = grad_flat_x_flat(x_flat, inv_temp)
         # jax.debug.print("pre 1st momentum half-step: x={x}, x_flat={xf}, grad={g}, p_flat={v}", ordered=True, x=x, xf=x_flat, g=grad_flat, v=p_flat)

@@ -1,8 +1,8 @@
-from functools import partial
 from tests import utils as testutils
 
 import unittest
 
+import jax
 from jax import random
 from jax import numpy as jnp
 
@@ -30,6 +30,36 @@ class TestTempering(unittest.TestCase):
         )
         self.assertFalse(jnp.isnan(p))
 
+    def test_autohmc_is_inv_temp_aware(self):
+        # warmup
+        rng_key = random.key(9)
+        n_rounds = 10
+        n_warmup, n_keep = utils.split_n_rounds(n_rounds) # translate rounds to warmup/keep
+        model, model_args, model_kwargs = testutils.make_eight_schools()
+        kernel = autohmc.AutoHMC(model)
+        mcmc = MCMC(
+            kernel, num_warmup=n_warmup, num_samples=n_keep, progress_bar=False
+        )
+        mcmc.run(rng_key, *model_args, **model_kwargs)
+        
+        # check the default is using no inv temp
+        init_state = mcmc.last_state
+        self.assertIsNone(init_state.inv_temp)
+
+        # check that the result of the (deterministic) involution changes with
+        # the inverse temperature of the target
+        def vmap_fn(inv_temp):
+            state = init_state._replace(inv_temp = inv_temp)
+            state = kernel.involution_main(
+                state.base_step_size, 
+                state, 
+                state.base_precond_state
+            )
+            return state.p_flat[0]
+
+        signatures = jax.vmap(vmap_fn)(jnp.linspace(0,1,10))
+        self.assertGreater(signatures.std(), jnp.finfo(signatures.dtype).eps)
+
     def test_tempered_moments(self):
         n_rounds = 14
         n_warmup, n_keep = utils.split_n_rounds(n_rounds) # translate rounds to warmup/keep
@@ -52,12 +82,12 @@ class TestTempering(unittest.TestCase):
                     mcmc.run(mcmc_key, *model_args, **model_kwargs)
                     adapt_stats=mcmc.last_state.stats.adapt_stats
                     self.assertTrue(
-                        jnp.allclose(adapt_stats.sample_mean, true_mean, atol=0.8),
+                        jnp.allclose(adapt_stats.sample_mean, true_mean, atol=0.3, rtol=0.1),
                         msg=f"sample_mean={adapt_stats.sample_mean} but true_mean={true_mean}"
                     )
                     sample_sd = jnp.sqrt(adapt_stats.sample_var)
                     self.assertTrue(
-                        jnp.allclose(sample_sd, true_sd, rtol=0.25),
+                        jnp.allclose(sample_sd, true_sd, atol=0.3, rtol=0.15),
                         msg=f"sample_sd={sample_sd} but true_sd={true_sd}"
                     )
 
