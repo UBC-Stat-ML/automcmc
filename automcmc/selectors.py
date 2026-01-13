@@ -173,7 +173,7 @@ class FixedStepSizeSelector(AcceptProbBracketingSelector):
     def __init__(self):
         super().__init__(
             max_n_iter = 0, 
-            bounds_sampler = make_deterministic_bounds_sampler() # bounds are irrelevant
+            bounds_sampler = make_deterministic_bounds_sampler(0.4, 0.6) # bounds are irrelevant
         )
 
     @staticmethod
