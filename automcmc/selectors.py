@@ -120,7 +120,7 @@ def make_deterministic_bounds_sampler(p_lo, p_hi):
     fixed_bounds = jnp.log(jnp.array([p_lo, p_hi]))
     return (lambda _: fixed_bounds)
 
-def DeterministicAsymmetricSelector(p_lo=0.01, p_hi=0.99, *args, **kwargs):
+def DeterministicAsymmetricSelector(p_lo=0.001, p_hi=0.9999, *args, **kwargs):
     """
     Asymmetric selector with fixed deterministic endpoints.
 
@@ -151,7 +151,7 @@ class SymmetricSelector(AcceptProbBracketingSelector):
             lax.abs(log_diff) + bounds[0] > 0
         )
 
-def DeterministicSymmetricSelector(p_lo=0.01, p_hi=0.99, *args, **kwargs):
+def DeterministicSymmetricSelector(p_lo=0.001, p_hi=0.9999, *args, **kwargs):
     """
     Symmetric selector with fixed deterministic endpoints.
 
