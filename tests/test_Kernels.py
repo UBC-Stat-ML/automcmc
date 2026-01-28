@@ -210,7 +210,7 @@ class TestKernels(unittest.TestCase):
         true_mean = 2.
         true_var = 0.5
         true_sd = jnp.sqrt(true_var)
-        n_rounds = 14
+        n_rounds = 15
         n_warmup, n_keep = utils.split_n_rounds(n_rounds)
         tol = 0.2
         for kernel_class in self.TESTED_KERNELS:
