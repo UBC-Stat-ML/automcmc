@@ -137,7 +137,7 @@ def optimize_fun(
         Mechanics and Engineering, 446*, 118308.
     """
     # start with NADAMW
-    init_value = value_nadamw = target_fun(init_params)
+    init_value = value_nadamw = value_lbfgs = target_fun(init_params)
     opt_params = init_params
     if "NADAMW" in settings:
         solver, step_fn = make_nadamw_solver(
@@ -171,8 +171,6 @@ def optimize_fun(
             verbose=verbose,
             **kwargs
         )
-    else:
-        value_lbfgs = jnp.inf
     
     # return lbfgs if better, explicitly handle nans (nan < x != nan)
     if jnp.isfinite(value_lbfgs) and value_lbfgs < value_nadamw:
