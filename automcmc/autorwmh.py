@@ -5,6 +5,13 @@ from jax import random
 from automcmc import autostep
 
 class AutoRWMH(autostep.AutoStep):
+    """
+    Implementation of AutoRWMH with Gaussian proposals.
+
+    .. note: We set the auxiliary variable to velocity type, meaning its
+       distribution is standard normal. This minimizes the number of matrix
+       operations to 1, which is done inside the involution.
+    """
    
     def refresh_aux_vars(self, rng_key, state, precond_state):
         p_flat = random.normal(rng_key, jnp.shape(state.p_flat))
