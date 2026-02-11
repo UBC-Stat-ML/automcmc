@@ -171,6 +171,8 @@ def optimize_fun(
             verbose=verbose,
             **kwargs
         )
+    else:
+        value_lbfgs = jnp.inf
     
     # return lbfgs if better, explicitly handle nans (nan < x != nan)
     if jnp.isfinite(value_lbfgs) and value_lbfgs < value_nadamw:
