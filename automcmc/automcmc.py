@@ -259,6 +259,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         """
         return jnp.zeros_like(state.p_flat[0])
     
+    @abstractmethod
     def refresh_aux_vars(self, rng_key, state, precond_state):
         """
         Gibbs update for any auxiliary variables of the sampler that admit
@@ -269,7 +270,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         :param precond_state: Preconditioner state.
         :return: State with updated auxiliary variables.
         """
-        raise state
+        pass
 
     def update_log_joint(self, state, precond_state):
         """

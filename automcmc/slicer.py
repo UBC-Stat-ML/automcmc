@@ -268,8 +268,27 @@ class SliceSampler(AutoMCMC, metaclass=ABCMeta):
 
     
 class DeterministicScanSliceSampler(SliceSampler):
+    """
+    Deterministic scan Gibbs sampler implemented via slice sampling along
+    coordinates. Mathematically, this is viewed as putting a uniform 
+    distribution on the `d` `d`-dimensional one-hot vectors. To update this
+    auxiliary variable, we use a deterministic partial refreshment kernel that
+    does a circular shift of the `1` element. This of course leaves the uniform
+    measure invariant. And since the measure is uniform, we can resort to the
+    default kinetic energy method (constant 0).
 
+    Geman, S. & Geman D. (1984). Stochastic Relaxation, Gibbs Distributions,
+    and the Bayesian Restoration of Images. *IEEE Transactions on Pattern 
+    Analysis and Machine Intelligence*, 6(6), 721--741.
+    """
     def init_extras(self, state):
+        """
+        Due to the use of partial refreshment of the auxiliary variable, we
+        must initialize said component as a proper one-hot vector.
+        
+        :param state: Initial state.
+        :return: State with direction initialized as one-hot vector.
+        """
         init_fn = lambda vec: jax.nn.one_hot(0, len(vec), dtype=vec.dtype)
         if jnp.shape(state.rng_key) == ():
             p_flat = init_fn(state.p_flat)
@@ -283,7 +302,9 @@ class DeterministicScanSliceSampler(SliceSampler):
 
 class HitAndRunSliceSampler(SliceSampler):
     """
-    Hit-and-Run sampler implemented via slice sampling along lines.
+    Hit-and-Run sampler implemented via slice sampling along lines. We put a
+    `Normal(0,S)` distribution on the direction, where `S` is the estimated
+    target covariance matrix.
 
     Kiatsupaibul, S., Smith, R. L., & Zabinsky, Z. B. (2011). An analysis of a 
     variation of hit-and-run for uniform sampling from general regions. ACM 
