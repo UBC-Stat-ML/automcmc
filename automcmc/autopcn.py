@@ -8,28 +8,46 @@ class AutoPCN(autostep.AutoStep):
     """
     Involutive implementation of a finite-dimensional preconditioned 
     Crank-Nicolson sampler à la [1]. We do this by identifying the parameter
-    of the AR1 proposal as the sine of an angle :math:`theta\\in(-pi,pi)`. This 
-    allows us to view the pCN proposal as a joint rotation of the position and 
-    the Gaussian variable, which is clearly involutive if we tack on an angle
-    sign flip. Note that this technically increases the set of allowed 
+    of the AR1 proposal as the sine of an angle :math:`\\theta\\in(-\\pi,\\pi)`.
+    This allows us to view the pCN proposal as a joint rotation of the position
+    and the Gaussian variable, which is clearly involutive if we tack on an 
+    angle sign flip. Note that this technically increases the set of allowed 
     proposals, as we can access linear combinations of the previous state and
-    the Gaussian innovation that have negative coefficients.
+    the Gaussian innovation that have negative coefficients. In this aspect,
+    the method resembles the used by the elliptical slice sampler [2].
 
     Another important difference with the approach in [1] is that, instead of
     assuming the prior is Gaussian and drawing directly from it, we track a 
     normal approximation to the posterior distribution using the 
-    preconditioning machinery of `automcmc`.
+    preconditioning machinery of `automcmc`. Now, while useful when it works,
+    the learning of the target may catastrophically fail since the only 
+    randomness in the sampler arises from this approximation. For this reason,
+    AutoPCN is **not recommended as a standalone sampler**. AutoPCN is intended
+    as an exploration kernel for ensemble Monte Carlo methods, such as parallel
+    tempering (as implemented in `nrpt`). 
     
     .. note::
-       For implementation purposes, we handle :math:`|theta|` with the step 
-       size, whereas :math:`sgn(theta)` is stored in the `idiosyncratic` field
-       of :class:`AutoMCMCState`.
+       For implementation purposes, we handle :math:`|\\theta|` with the step 
+       size, whereas :math:`sgn(\\theta)` is stored in the `idiosyncratic` 
+       field of :class:`AutoMCMCState`. Theoretically, this amounts to adding
+       the sign to the state space of the underlying sampler (with `Unif{-1,1}`
+       measure), while the abs value is handled as the autostep parameter. 
+       
+       Note that we could randomize the sign inside :meth:`refresh_aux_vars`,
+       but this does not seem useful. Also, the kinetic energy is unaffected
+       because the sign is invariant under the involution; and even if it 
+       weren't, its target measure is uniform.
 
     .. warning:: This class is still under development.
+
+    .. rubric:: References
 
     [1] Cotter, S. L., Roberts, G. O., Stuart, A. M., & White, D. (2013). 
     MCMC methods for functions: Modifying old algorithms to make them faster.
     *Statistical Science*, 424-446.
+
+    [2] Murray, I., Adams, R., & MacKay, D. (2010). Elliptical slice sampling.
+    In *Proceedings of the 13th AISTATS conference*, 541-548.
     """
 
     def __init__(
@@ -53,8 +71,12 @@ class AutoPCN(autostep.AutoStep):
     # So the kinetic energy is
     #   0.5 (p-m)^T S^{-1} (p-m) = 0.5 (p-m)^T(UU^T)(p-m) = 0.5 v^Tv
     # where v:=U^T(p-m), which is the actual variable we carry around
-    # Note: we cannot skip this step like in AutoRWMH because the pCN 
-    # involution does affect the momentum variable
+    # Note: we cannot skip this step like in AutoRWMH because the pCN
+    # involution does affect the momentum variable.
+    # Note: the sign of the angle (which is technically part of the state of 
+    # the underlying involutive sampler) is itself unaffected by the 
+    # involution. But even if it were, its distribution is uniform, so there is
+    # no need to handle its energy here.
     def kinetic_energy(self, state, precond_state):
         v_flat = state.p_flat
         return 0.5*jnp.dot(v_flat, v_flat)
@@ -62,6 +84,8 @@ class AutoPCN(autostep.AutoStep):
     # sample p ~ N(m,S), where m and S are the approx posterior mean and 
     # covariance, respectively. Equivalent to v~N(0,I) and p = m + Lv, with 
     # LL^T = S. Thus, we instead draw v and store it in `p_flat`
+    # Note: the sign of the angle (which is technically part of the state of 
+    # the underlying involutive sampler) is not refreshed.
     def refresh_aux_vars(self, rng_key, state, precond_state):
         v_flat = random.normal(rng_key, jnp.shape(state.p_flat))
         return state._replace(p_flat = v_flat)
