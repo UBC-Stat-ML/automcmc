@@ -14,16 +14,16 @@ class TestConstrained(unittest.TestCase):
         J = jax.random.normal(J_key, (m,n))
         tol = jnp.sqrt(jnp.finfo(J.dtype).eps)
         jop = constrained.JacobianOperator(J)
-        assert jnp.isclose(1, jnp.linalg.cond(jop.Q))
-        assert jnp.linalg.cond(J.T) > 1.1
-        assert jnp.abs(jop.Q.T@jop.Q - jnp.identity(m)).max() < tol
-        assert jnp.isclose(
+        self.assertAlmostEqual(1, jnp.linalg.cond(jop.Q),delta=tol)
+        self.assertGreater(jnp.linalg.cond(J.T), 1.1)
+        self.assertTrue(jnp.abs(jop.Q.T@jop.Q - jnp.identity(m)).max() < tol)
+        self.assertTrue(jnp.isclose(
             jop.log_abs_det,
             -0.5*jnp.log(jnp.abs(jnp.linalg.det(jnp.inner(J,J)))),
             rtol = 0.01
-        )
+        ))
         _,PTv = jop.proj_normal_tangent(v)
-        assert jnp.abs(J@PTv).max() < tol # PTv should be orthogonal to every row of J
+        self.assertTrue(jnp.abs(J@PTv).max() < tol) # PTv should be orthogonal to every row of J
 
 
 if __name__ == '__main__':
