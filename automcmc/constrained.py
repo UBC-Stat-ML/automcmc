@@ -2,6 +2,8 @@ import jax
 from jax.typing import ArrayLike
 import jax.numpy as jnp
 
+from automcmc import utils
+
 class JacobianOperator:
     """
     Implements several linear algebraic operations associated with :math:`J_x`,
@@ -50,4 +52,3 @@ class JacobianOperator:
         """
         PNv = self.proj_normal(v)
         return (PNv, v - PNv)
-

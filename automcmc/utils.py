@@ -1,7 +1,10 @@
+from typing import Callable, Optional
+
 import jax
 from jax import lax
 from jax import numpy as jnp
 from jax.experimental import checkify
+from jax.typing import ArrayLike
 
 ###############################################################################
 # basic utilities
@@ -62,3 +65,64 @@ def current_round(n_samples):
 
 def n_warmup_to_adapt_rounds(n_warmup):
     return ceil_log2(n_warmup + 2) - 1
+
+###############################################################################
+# numerical utils
+###############################################################################
+
+def newton(
+        f: Callable[[ArrayLike], jax.Array],
+        x0: ArrayLike,
+        tol: Optional[ArrayLike] = None,
+        max_iter: int = 100,
+        mode: str = "direct"
+    ) -> tuple[jax.Array, ...]:
+    """
+    Root finding using Newton's method.
+    """
+    dim = len(x0)
+    val0 = f(x0)
+    assert len(val0) == dim
+    err0 = jnp.abs(val0).max()
+    if tol is None:
+        tol = jnp.sqrt(jnp.finfo(err0.dtype).eps)
+
+    def cond_fn(carry):
+        x, n, val, err, d_err = carry
+        return jnp.logical_and(
+            n < max_iter,                        # still have budget to go
+            jnp.logical_and(
+                err >= tol,                      # error still high
+                jnp.logical_or(n<3, d_err < tol) # after 3rd round, error is not increasing significantly
+            )
+        )
+
+    def body_fn(carry):
+        x, n, val0, err0, _ = carry
+        n += 1
+
+        # solve for Newton's update
+        #   J_f(x) dx = -f(x) ==> x' = x + dx
+        if mode == "direct":
+            # form full Jacobian and use a direct solver
+            dx = jnp.linalg.solve(jax.jacobian(f)(x), -val0)
+        elif mode == "iterative":
+            # use GMRES with Jacobian-vector products
+            # Note: we use this solver in a setting where dim^2 storage is ok,
+            # and the absolute worst case time complexity O(dim^3) is tolerable
+            # every now and then. Therefore, we avoid restarting
+            jvp = lambda v: jax.jvp(f, (x,), (v,))[1]
+            dx = jax.scipy.sparse.linalg.gmres(
+                jvp, -val0, tol=tol, restart=dim
+            )[0]
+        else:
+            raise ValueError(f"Unknown mode `{mode}`")
+        
+        # return updated carry
+        x += dx
+        val = f(x)
+        err = jnp.abs(val).max()
+        return (x, n, val, err, err-err0)
+    
+    # run loop and return full carry for diagnostics
+    return jax.lax.while_loop(cond_fn, body_fn, (x0, 0, val0, err0, err0))
