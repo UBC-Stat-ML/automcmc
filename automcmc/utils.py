@@ -73,12 +73,31 @@ def n_warmup_to_adapt_rounds(n_warmup):
 def newton(
         f: Callable[[ArrayLike], jax.Array],
         x0: ArrayLike,
-        tol: Optional[ArrayLike] = None,
+        tol: Optional[float] = None,
         max_iter: int = 100,
-        mode: str = "direct"
-    ) -> tuple[jax.Array, ...]:
+        mode: str = "gmres"
+    ) -> tuple:
     """
-    Root finding using Newton's method.
+    A Newton root solver.
+
+    :param Callable[[ArrayLike], jax.Array] f: target function
+    :param ArrayLike x0: initial guess
+    :param Optional[float] tol: convergence tolerance, defaults to None, in
+        which case the `sqrt(eps)` value is used depending on the types of
+        the inputs.
+    :param int max_iter: maximum number of Newton steps, defaults to 100
+    :param str mode: one of `("direct", "gmres")`. The default `"gmres"` uses
+        the iterative GMRES solver together with `jax.jvp` to avoid ever 
+        forming the full Jacobian. When `mode="direct"`, the full Jacobian is
+        formed and the update direction is obtained via a linear solve.
+    :return tuple: A tuple of
+
+        * `x`: root
+        * `n`: number of iterations
+        * `val`: function value at the root
+        * `err`: maximum absolute value of `val`
+        * `d_err`: change in `err` in the last iteration
+        * `flag`: true if `err<tol` (i.e., success)
     """
     dim = len(x0)
     val0 = f(x0)
@@ -106,7 +125,7 @@ def newton(
         if mode == "direct":
             # form full Jacobian and use a direct solver
             dx = jnp.linalg.solve(jax.jacobian(f)(x), -val0)
-        elif mode == "iterative":
+        elif mode == "gmres":
             # use GMRES with Jacobian-vector products
             # Note: we use this solver in a setting where dim^2 storage is ok,
             # and the absolute worst case time complexity O(dim^3) is tolerable
@@ -124,5 +143,6 @@ def newton(
         err = jnp.abs(val).max()
         return (x, n, val, err, err-err0)
     
-    # run loop and return full carry for diagnostics
-    return jax.lax.while_loop(cond_fn, body_fn, (x0, 0, val0, err0, err0))
+    # run loop and return full carry for diagnostics plus flag
+    carry = jax.lax.while_loop(cond_fn, body_fn, (x0, 0, val0, err0, err0))
+    return (*carry, carry[3]<tol)
