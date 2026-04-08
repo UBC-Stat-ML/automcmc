@@ -50,6 +50,7 @@ class AutoPCN(autostep.AutoStep):
     In *Proceedings of the 13th AISTATS conference*, 541-548.
     """
 
+    # switch the default selector
     def __init__(
             self, 
             *args, 
@@ -57,8 +58,6 @@ class AutoPCN(autostep.AutoStep):
             **kwargs
         ):
         super().__init__(*args, selector=selector, **kwargs)
-        self._auto_step_size_fn = self.selector.gen_executor(self)
-
 
     # use the optional `idiosyncratic` field to store the sign of the angle
     def init_extras(self, state):
