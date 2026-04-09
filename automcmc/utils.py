@@ -70,6 +70,12 @@ def n_warmup_to_adapt_rounds(n_warmup):
 # numerical utils
 ###############################################################################
 
+def newton_default_tol(x):
+    return 10*jnp.finfo(x.dtype).eps
+
+def newton_fn_value_err(val):
+    return jnp.abs(val).max()
+
 def newton(
         f: Callable[[ArrayLike], jax.Array],
         x0: ArrayLike,
@@ -83,11 +89,11 @@ def newton(
     :param Callable[[ArrayLike], jax.Array] f: target function
     :param ArrayLike x0: initial guess
     :param Optional[float] tol: convergence tolerance, defaults to None, in
-        which case the `sqrt(eps)` value is used depending on the types of
+        which case an adequate value is chosen depending on the float type of
         the inputs.
     :param int max_iter: maximum number of Newton steps, defaults to 100
     :param str mode: one of `("direct", "gmres")`. The default `"gmres"` uses
-        the iterative GMRES solver together with `jax.jvp` to avoid ever 
+        the iterative GMRES solver together with `jax.jvp` to avoid ever
         forming the full Jacobian. When `mode="direct"`, the full Jacobian is
         formed and the update direction is obtained via a linear solve.
     :return tuple: A tuple of
@@ -102,9 +108,9 @@ def newton(
     dim = len(x0)
     val0 = f(x0)
     assert len(val0) == dim
-    err0 = jnp.abs(val0).max()
+    err0 = newton_fn_value_err(val0)
     if tol is None:
-        tol = jnp.sqrt(jnp.finfo(err0.dtype).eps)
+        tol = newton_default_tol(err0)
 
     def cond_fn(carry):
         x, n, val, err, d_err = carry
@@ -136,13 +142,13 @@ def newton(
             )[0]
         else:
             raise ValueError(f"Unknown mode `{mode}`")
-        
+
         # return updated carry
         x += dx
         val = f(x)
-        err = jnp.abs(val).max()
+        err = newton_fn_value_err(val)
         return (x, n, val, err, err-err0)
-    
+
     # run loop and return full carry for diagnostics plus flag
     carry = jax.lax.while_loop(cond_fn, body_fn, (x0, 0, val0, err0, err0))
     return (*carry, carry[3]<tol)

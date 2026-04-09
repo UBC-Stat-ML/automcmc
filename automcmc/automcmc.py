@@ -272,6 +272,10 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         """
         pass
 
+    # this is currently only used by constrained samplers
+    def postprocess_logprior_and_loglik(self, state, log_prior, log_lik):
+        return log_prior, log_lik
+
     def update_log_joint(self, state, precond_state):
         """
         Update the log-prior, log-likelihood, and log-joint.
@@ -285,6 +289,9 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
 
         # get logprior, loglik and tempered potential
         new_log_prior, new_log_lik = self.logprior_and_loglik(state.x)
+        new_log_prior, new_log_lik = self.postprocess_logprior_and_loglik(
+            state, new_log_prior, new_log_lik
+        )
         new_temp_pot = tempering.tempered_potential_from_logprior_and_loglik(
             new_log_prior, new_log_lik, state.inv_temp
         )
