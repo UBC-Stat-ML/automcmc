@@ -84,7 +84,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def __init__(
             self,
             *args,
-            preconditioner=preconditioning.IdentityDiagonalPreconditioner, # we need rotational symmetry
+            preconditioner=preconditioning.IdentityDiagonalPreconditioner(), # we need rotational symmetry
             constraint_fn=None, # aim is to target `constraint_fn=0`. Input var is x_flat.
             solver_options = {},
             **kwargs
@@ -92,7 +92,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         super().__init__(*args,preconditioner=preconditioner,**kwargs)
         assert isinstance(
             self.preconditioner, preconditioning.IdentityDiagonalPreconditioner
-        ), "This method is justified only for `IdentityDiagonalPreconditioner`"
+        ), "This method is justified only for `IdentityDiagonalPreconditioner`" \
+          f" but I got instead {type(self.preconditioner)}"
         self.constraint_fn = constraint_fn
         self.solver_options = solver_options
 
