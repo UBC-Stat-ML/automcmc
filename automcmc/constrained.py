@@ -4,7 +4,7 @@ import jax
 from jax.typing import ArrayLike
 from jax import flatten_util, random, numpy as jnp
 
-from automcmc import utils, autostep, preconditioning
+from automcmc import utils, autostep, preconditioning, automcmc
 
 class ConstraintState(NamedTuple):
     """
@@ -174,6 +174,46 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         log_lik = jnp.where(cs.is_satisfied, log_lik, -jnp.inf)
         return log_prior, log_lik
 
+    def close_in_ambient_space(self, x, y):
+        tol = self.solver_options['tol']
+        return jnp.allclose(x, y, atol=10*tol, rtol=0.01)
+
+    def reversibility_check(
+            self,
+            fwd_exponent: int,
+            bwd_exponent: int,
+            initial_state: automcmc.AutoMCMCState,
+            proposed_state: automcmc.AutoMCMCState
+        ) -> bool:
+        """
+        Implement the additional checks required by constrained sampling.
+
+        :param fwd_exponent: Forward exponent.
+        :param bwd_exponent: Backward exponent.
+        :param initial_state: Initial sampler state.
+        :param proposed_state: Proposed state.
+        :return bool: True if reversibility check passed.
+        """
+        passed = fwd_exponent == bwd_exponent
+        passed = jnp.logical_and(
+            passed, proposed_state.idiosyncratic.is_satisfied
+        )
+        passed = jnp.logical_and(
+            passed,
+            self.close_in_ambient_space(
+                flatten_util.ravel_pytree(initial_state.x)[0],
+                flatten_util.ravel_pytree(proposed_state.x)[0]
+            )
+        )
+        return jnp.logical_and(
+            passed,
+            self.close_in_ambient_space(
+                initial_state.p_flat,
+                proposed_state.p_flat
+            )
+        )
+
+
     # Both position and velocity are affected by this transform
     #   - position is updated by moving along velocity and projecting
     #   - velocity is updated by projecting the displacement vector
@@ -203,5 +243,3 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     # to the new tangent space in `involution_main`
     def involution_aux(self, state):
         return state._replace(p_flat = -state.p_flat)
-
-

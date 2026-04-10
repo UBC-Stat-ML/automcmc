@@ -69,7 +69,12 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         """
         return self._auto_step_size_fn(state, selector_params, precond_state)
 
-    def reversibility_check(fwd_exponent, bwd_exponent, *args) -> bool:
+    def reversibility_check(
+            self,
+            fwd_exponent: int,
+            bwd_exponent: int,
+            *args
+        ) -> bool:
         """
         Default reversibility check. Only the equality of exponents is
         assessed. Some samplers overload this to implement more involved
