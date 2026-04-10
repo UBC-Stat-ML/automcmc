@@ -4,7 +4,7 @@ import jax
 from jax.typing import ArrayLike
 from jax import flatten_util, random, numpy as jnp
 
-from automcmc import utils, autostep, tempering
+from automcmc import utils, autostep, preconditioning
 
 class ConstraintState(NamedTuple):
     """
@@ -84,14 +84,20 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def __init__(
             self,
             *args,
+            preconditioner=preconditioning.IdentityDiagonalPreconditioner, # we need rotational symmetry
             constraint_fn=None, # aim is to target `constraint_fn=0`. Input var is x_flat.
             solver_options = {},
             **kwargs
         ):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args,preconditioner=preconditioner,**kwargs)
+        assert isinstance(
+            self.preconditioner, preconditioning.IdentityDiagonalPreconditioner
+        ), "This method is justified only for `IdentityDiagonalPreconditioner`"
         self.constraint_fn = constraint_fn
         self.solver_options = solver_options
 
+    # TODO: using vjp for J^Tz=(z^TJ)^T instead of Qz would be more memory
+    # efficient **if** we can get rid of Q in projection to tangent space
     def proj_level_set(
             self,
             x_flat: ArrayLike,

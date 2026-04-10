@@ -2,9 +2,16 @@ import unittest
 import jax
 from jax import numpy as jnp
 
-from automcmc import constrained,utils
+from automcmc import constrained,utils,preconditioning
 
 class TestConstrained(unittest.TestCase):
+
+    def test_invalid_inputs(self):
+        with self.assertRaises(AssertionError):
+            constrained.AutoConstrainedRWMH(
+                potential_fn=lambda x: 0.0,
+                preconditioner=preconditioning.FixedDensePreconditioner(),
+            )
 
     def test_Jacobian_algebra(self):
         m = 6
