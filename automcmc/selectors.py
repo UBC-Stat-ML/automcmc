@@ -30,14 +30,14 @@ class StepSizeSelector(ABC):
     def adapt_base_step_size(base_step_size, mean_step_size, n_samples_in_round):
         """
         Criterion for adapting the base step size after a round of sampling.
-        
+
         :param base_step_size: Previous base step size.
         :param mean_step_size: Average step size used in the round.
         :param n_samples_in_round: Length of the round.
         :return: An updated base step size.
         """
         return mean_step_size
-    
+
 #######################################
 # acceptance probability bracketing
 #######################################
@@ -45,7 +45,7 @@ class StepSizeSelector(ABC):
 class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
     """
     Class of selectors that adjust the step size by bracketing the acceptance
-    probability in a possibly randomized interval (Biron-Lattes et al. 2024, 
+    probability in a possibly randomized interval (Biron-Lattes et al. 2024,
     Liu et al. 2025)
 
     :param max_n_iter: Maximum number of step size doubling/halvings.
@@ -55,7 +55,7 @@ class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
     """
 
     def __init__(
-            self, 
+            self,
             max_n_iter=14, # 2**14~1.6e4 => step size changes +/- 4 orders of mag
             bounds_sampler=_draw_log_unif_bounds
         ):
@@ -70,7 +70,7 @@ class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
         :return: Random instance of the parameters used by the selector.
         """
         return self.bounds_sampler(rng_key)
-    
+
     @staticmethod
     @abstractmethod
     def should_grow(parameters, log_diff):
@@ -111,7 +111,7 @@ class AsymmetricSelector(AcceptProbBracketingSelector):
     @staticmethod
     def should_shrink(bounds, log_diff):
         return jnp.logical_or(
-            jnp.logical_not(lax.is_finite(log_diff)), 
+            jnp.logical_not(lax.is_finite(log_diff)),
             log_diff < bounds[0]
         )
 
@@ -120,7 +120,7 @@ def make_deterministic_bounds_sampler(p_lo, p_hi):
     fixed_bounds = jnp.log(jnp.array([p_lo, p_hi]))
     return (lambda _: fixed_bounds)
 
-def DeterministicAsymmetricSelector(p_lo=0.001, p_hi=0.999, *args, **kwargs):
+def DeterministicAsymmetricSelector(p_lo=0.0001, p_hi=0.9999, *args, **kwargs):
     """
     Asymmetric selector with fixed deterministic endpoints.
 
@@ -151,7 +151,7 @@ class SymmetricSelector(AcceptProbBracketingSelector):
             lax.abs(log_diff) + bounds[0] > 0
         )
 
-def DeterministicSymmetricSelector(p_lo=0.001, p_hi=0.999, *args, **kwargs):
+def DeterministicSymmetricSelector(p_lo=0.0001, p_hi=0.9999, *args, **kwargs):
     """
     Symmetric selector with fixed deterministic endpoints.
 
@@ -168,11 +168,11 @@ def DeterministicSymmetricSelector(p_lo=0.001, p_hi=0.999, *args, **kwargs):
 
 class FixedStepSizeSelector(AcceptProbBracketingSelector):
     """
-    A dummy selector that never adjusts the step size. 
+    A dummy selector that never adjusts the step size.
     """
     def __init__(self):
         super().__init__(
-            max_n_iter = 0, 
+            max_n_iter = 0,
             bounds_sampler = make_deterministic_bounds_sampler(0.4, 0.6) # bounds are irrelevant
         )
 
@@ -183,7 +183,7 @@ class FixedStepSizeSelector(AcceptProbBracketingSelector):
     @staticmethod
     def should_shrink(bounds, log_diff):
         return False
-    
+
     @staticmethod
     def adapt_base_step_size(base_step_size, mean_step_size, n_samples_in_round):
         return base_step_size
@@ -218,16 +218,16 @@ DEBUG_EXECUTOR = False
 def gen_alter_step_size_cond_fun(pred_fun, max_n_iter):
     def alter_step_size_cond_fun(args):
         (
-            state, 
-            exponent, 
-            next_log_joint, 
+            state,
+            exponent,
+            next_log_joint,
             init_log_joint,
-            selector_params, 
+            selector_params,
             precond_state
         ) = args
 
         # `numerically_safe_diff` is used to avoid corner cases where the step
-        # size is 0 already but, because of extreme nonlinearities, the 
+        # size is 0 already but, because of extreme nonlinearities, the
         # potential at this fictituous "next" point gives a log_joint that is
         # exactly equal to the next float of `init_log_joint`
         log_diff = utils.numerically_safe_diff(init_log_joint,next_log_joint)
@@ -242,11 +242,11 @@ def gen_alter_step_size_cond_fun(pred_fun, max_n_iter):
 def gen_alter_step_size_body_fun(kernel, direction):
     def alter_step_size_body_fun(args):
         (
-            state, 
-            exponent, 
-            next_log_joint, 
+            state,
+            exponent,
+            next_log_joint,
             init_log_joint,
-            selector_params, 
+            selector_params,
             precond_state
         ) = args
         exponent = exponent + direction
@@ -261,9 +261,9 @@ def gen_alter_step_size_body_fun(kernel, direction):
         # maybe print debug info
         if DEBUG_EXECUTOR:
             jax.debug.print(
-                "dir: {d: d}: base: {bs:.8f} + exp: {e: d} = eps: {s:.8f} | (L0, L1, DL, NDL): ({l0: .2f},{l1: .2f},{dl: .2f},{ndl: .2f}) | bounds: ({a:.3f},{b:.3f})", 
+                "dir: {d: d}: base: {bs:.8f} + exp: {e: d} = eps: {s:.8f} | (L0, L1, DL, NDL): ({l0: .2f},{l1: .2f},{dl: .2f},{ndl: .2f}) | bounds: ({a:.3f},{b:.3f})",
                 ordered=True,
-                d=direction, 
+                d=direction,
                 bs=state.base_step_size,
                 e=exponent,
                 s=eps,
@@ -282,11 +282,11 @@ def gen_alter_step_size_body_fun(kernel, direction):
             # )
 
         return (
-            state, 
-            exponent, 
-            next_log_joint, 
+            state,
+            exponent,
+            next_log_joint,
             init_log_joint,
-            selector_params, 
+            selector_params,
             precond_state
         )
 
@@ -313,45 +313,45 @@ def gen_target_acc_prob_executor(kernel):
     grow_step_size_body_fun = gen_alter_step_size_body_fun(kernel, 1)
 
     def shrink_step_size(
-            state, 
-            selector_params, 
-            next_log_joint, 
-            init_log_joint, 
+            state,
+            selector_params,
+            next_log_joint,
+            init_log_joint,
             precond_state
         ):
         exponent = 0
         state, exponent, *_ = lax.while_loop(
             shrink_step_size_cond_fun,
             shrink_step_size_body_fun,
-            (state, exponent, next_log_joint, init_log_joint, 
+            (state, exponent, next_log_joint, init_log_joint,
                 selector_params, precond_state)
         )
         return state, exponent
 
     def grow_step_size(
-            state, 
-            selector_params, 
-            next_log_joint, 
-            init_log_joint, 
+            state,
+            selector_params,
+            next_log_joint,
+            init_log_joint,
             precond_state
         ):
-        exponent = 0        
+        exponent = 0
         state, exponent, *_ = lax.while_loop(
             grow_step_size_cond_fun,
             grow_step_size_body_fun,
-            (state, exponent, next_log_joint, init_log_joint, 
+            (state, exponent, next_log_joint, init_log_joint,
                 selector_params, precond_state)
         )
 
-        # deduct 1 step to avoid cliffs, but only if we actually entered the 
+        # deduct 1 step to avoid cliffs, but only if we actually entered the
         # loop and didn't go over the max number of iterations
         exponent = jnp.where(
             jnp.logical_and(exponent > 0, exponent < selector.max_n_iter),
-            exponent-1, 
+            exponent-1,
             exponent
         )
         return state, exponent
-    
+
     def auto_step_size_fn(state, selector_params, precond_state):
         init_log_joint = state.log_joint # Note: assumes the log joint value is up to date!
         next_state = kernel.update_log_joint(
@@ -362,7 +362,7 @@ def gen_target_acc_prob_executor(kernel):
         state = copy_state_extras(next_state, state) # update state's stats and rng_key
 
         # try shrinking (no-op if selector decides not to shrink)
-        # note: we call the output of this `state` because it should equal the 
+        # note: we call the output of this `state` because it should equal the
         # initial state except for extra fields -- stats, rng_key -- which we
         # want to update
         state, shrink_exponent = shrink_step_size(
@@ -376,7 +376,7 @@ def gen_target_acc_prob_executor(kernel):
 
         # can add the two since one of them must be zero
         return state, shrink_exponent + grow_exponent
-    
+
     return auto_step_size_fn
 
 #######################################
@@ -384,7 +384,7 @@ def gen_target_acc_prob_executor(kernel):
 #######################################
 
 def gen_max_ejd_executor(kernel):
-    
+
     def expected_jump_dist(eps, state, precond_state):
         # take the step
         next_state = kernel.update_log_joint(
@@ -425,7 +425,7 @@ def gen_max_ejd_executor(kernel):
             return (e, old_ejd, new_ejd, state, precond_state)
 
         return cond_fn, body_fn
-    
+
     inc_cond_fn, inc_body_fn = gen_optim_ejd_funcs(kernel, 1)
     dec_cond_fn, dec_body_fn = gen_optim_ejd_funcs(kernel, -1)
 
@@ -437,13 +437,13 @@ def gen_max_ejd_executor(kernel):
         state, inc_eps_ejd = expected_jump_dist(inc_eps, state, precond_state)
         dec_eps = kernel.step_size(state.base_step_size, -1)
         state, dec_eps_ejd = expected_jump_dist(dec_eps, state, precond_state)
-        
+
         # check which direction gives the best improvement
         # Note: KEY IMPLEMENTATION DETAIL
-        # argmax defaults to first elem when they are all equal. In particular, 
-        # when all(all_ejd==0), the decrease direction is selected. This is 
-        # intentional! Doing this allows the algorithm to decrease the step 
-        # size since it is clearly too agressive.  
+        # argmax defaults to first elem when they are all equal. In particular,
+        # when all(all_ejd==0), the decrease direction is selected. This is
+        # intentional! Doing this allows the algorithm to decrease the step
+        # size since it is clearly too agressive.
         all_ejd = jnp.array([dec_eps_ejd,base_eps_ejd,inc_eps_ejd])
         imax = all_ejd.argmax()
         new_ejd = all_ejd[imax]
@@ -477,5 +477,5 @@ def gen_max_ejd_executor(kernel):
             jax.debug.print("final: e={}", exponent, ordered=True)
 
         return state, exponent
-    
+
     return auto_step_size_fn

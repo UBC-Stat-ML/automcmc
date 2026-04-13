@@ -31,7 +31,9 @@ class TestConstrained(unittest.TestCase):
         cs = constrained.make_constraint_state(True,J) # err is irrelevant here
         self.assertAlmostEqual(1, jnp.linalg.cond(cs.Q),delta=tol)
         self.assertGreater(jnp.linalg.cond(J.T), 1.1)
-        self.assertTrue(jnp.abs(cs.Q.T@cs.Q - jnp.identity(m)).max() < tol)
+        self.assertLess(
+            utils.newton_fn_value_err(cs.Q.T@cs.Q - jnp.identity(m)), tol
+        )
         self.assertTrue(jnp.isclose(
             cs.log_abs_det,
             -0.5*jnp.log(jnp.abs(jnp.linalg.det(jnp.inner(J,J)))),
@@ -131,6 +133,11 @@ class TestConstrained(unittest.TestCase):
         # uniform dist on T^2 torus embedded in R^3
         # Example 1 in Zappa & Holmes-Cerfon (2018)
         # Run 1-sample KS tests on known (phi, theta) marginals
+        theta_cdf = partial(stats.uniform.cdf, scale=2*np.pi)
+        phi_pdf_fn = lambda x: (1+(r/R)*np.cos(x)) / (2*np.pi)
+        phi_cdf = np.vectorize(
+            lambda q: integrate.quad(phi_pdf_fn, np.zeros_like(q), q)[0]
+        )
 
         # define problem params
         R, r = 1.0, 0.5
@@ -149,36 +156,52 @@ class TestConstrained(unittest.TestCase):
         self.assertTrue(jnp.allclose(theta, theta2))
         self.assertTrue(jnp.allclose(phi, phi2))
         self.assertLess(
-            jnp.abs(jax.vmap(constraint_fn,in_axes=(1,))(param_fn(theta, phi))).max(),
+            utils.newton_fn_value_err(
+                jax.vmap(constraint_fn,in_axes=(1,))(param_fn(theta, phi))
+            ),
             1e-6
         )
 
         # mcmc sampling
         # use thinning to approximate independent sampling so KS test
         # assumption is "less broken"
-        kernel = constrained.AutoConstrainedRWMH(
-            potential_fn=lambda x: jnp.zeros_like(x,shape=()), # uniform
-            constraint_fn=constraint_fn,
-            solver_options={'mode': 'direct'},
-            # use fixed step size
-            # same as in paper, gives ~ 68% acc prob
-            init_base_step_size = 0.5,
-            selector = selectors.FixedStepSizeSelector()
-        )
-        mcmc = MCMC(kernel,num_warmup=1024,num_samples=2**15,thinning=32)
-        mcmc.run(mcmc_key, init_params=jnp.ones(3))
-        samples = mcmc.get_samples()
-        theta, phi = inv_param_fn(*samples.T)
+        mode = "direct"
+        potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
+        n_warm, n_keep = utils.split_n_rounds(15)
+        init_params = jnp.ones(3) # init outside level set on purpose
+        for sel in (
+            selectors.FixedStepSizeSelector(),
+            selectors.DeterministicSymmetricSelector(),
+        ):
+            rng_key, mcmc_key = jax.random.split(rng_key)
+            kernel = constrained.AutoConstrainedRWMH(
+                potential_fn=potential_fn,
+                constraint_fn=constraint_fn,
+                solver_options={'mode': mode},
+                init_base_step_size = 0.5, # step used in paper
+                selector = sel
+            )
+            mcmc = MCMC(
+                kernel,
+                num_warmup=n_warm,
+                num_samples=n_keep,
+                thinning=32, # %ESS ~ 1/32
+                progress_bar=False
+            )
+            mcmc.run(mcmc_key,init_params=init_params)
+            samples = mcmc.get_samples()
+            self.assertLess(
+                utils.newton_fn_value_err(jax.vmap(constraint_fn)(samples)),
+                kernel.solver_options['tol']
+            )
+            theta, phi = inv_param_fn(*samples.T)
+            self.assertAlmostEqual(theta.mean(), jnp.pi, delta=0.1)
+            self.assertAlmostEqual(phi.mean(), jnp.pi, delta=0.1)
 
-        # KS tests
-        theta_cdf = partial(stats.uniform.cdf, scale=2*np.pi)
-        phi_pdf_fn = lambda x: (1+(r/R)*np.cos(x)) / (2*np.pi)
-        phi_cdf = np.vectorize(
-            lambda q: integrate.quad(phi_pdf_fn, np.zeros_like(q), q)[0]
-        )
-        self.assertAlmostEqual(phi_cdf(2*np.pi), 1.0)
-        self.assertGreater(stats.ks_1samp(theta, theta_cdf).pvalue, 0.01)
-        self.assertGreater(stats.ks_1samp(phi, phi_cdf).pvalue, 0.01)
+            # KS tests
+            self.assertAlmostEqual(phi_cdf(2*np.pi), 1.0)
+            self.assertGreater(stats.ks_1samp(theta, theta_cdf).pvalue, 0.01)
+            self.assertGreater(stats.ks_1samp(phi, phi_cdf).pvalue, 0.01)
 
 
 
