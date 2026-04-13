@@ -3,6 +3,10 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
+###############################################################################
+# toy examples
+###############################################################################
+
 def gaussian_potential(x):
     return ((x - 2) ** 2).sum()
 
@@ -31,8 +35,8 @@ def toy_unid(n_flips, n_heads=None):
 #
 # Ref: Biron-Lattes, Campbell, & Bouchard-Côté (2024)
 def toy_conjugate_normal(
-        d = jnp.int32(3), 
-        m = jnp.float32(2.), 
+        d = jnp.int32(3),
+        m = jnp.float32(2.),
         sigma0 = jnp.float32(2.)
     ):
     def model(sigma0, y):
@@ -61,6 +65,35 @@ def make_eight_schools():
     model_args = (sigma,)
     model_kwargs = {'y': y}
     return model, model_args, model_kwargs
+
+#######################################
+# constrained problems
+#######################################
+
+# uniform dist on T^2 torus embedded in R^3
+# Example 1 in Zappa & Holmes-Cerfon (2018)
+def torus_constraint(R, r, x):
+    return jnp.array([
+        jnp.square(R - jnp.linalg.norm(x[:-1])) + x[-1]*x[-1] - r*r
+    ])
+
+def torus_param(R, r, theta, phi):
+    cos_theta, sin_theta = jnp.cos(theta), jnp.sin(theta)
+    cos_phi, sin_phi = jnp.cos(phi), jnp.sin(phi)
+    u = R + r*cos_phi
+    return jnp.array([u*cos_theta, u*sin_theta, r*sin_phi])
+
+# need arctan2 to return angles in [0,2pi)
+arctan2pi = lambda x,y: jnp.remainder(jnp.arctan2(x,y), 2*jnp.pi)
+def inv_torus_param(R, r, x, y, z):
+    theta = arctan2pi(y, x)
+    d = jnp.hypot(x,y) - R
+    phi = arctan2pi(z, d)
+    return (theta, phi)
+
+###############################################################################
+# diagnostics
+###############################################################################
 
 def extremal_diagnostics(mcmc):
     """

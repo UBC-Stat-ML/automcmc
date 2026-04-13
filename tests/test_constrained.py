@@ -1,8 +1,16 @@
+from tests import utils as testutils
+
+from functools import partial
 import unittest
+
+import numpy as np
+from scipy import stats, integrate
+
 import jax
 from jax import numpy as jnp
 
-from automcmc import constrained,utils,preconditioning
+from automcmc import constrained,utils,preconditioning,selectors
+from numpyro.infer import MCMC
 
 class TestConstrained(unittest.TestCase):
 
@@ -118,6 +126,59 @@ class TestConstrained(unittest.TestCase):
             self.assertTrue(kernel.close_in_ambient_space(
                 state_two.p_flat, state.p_flat
             ))
+
+    def test_sampling_torus(self):
+        # uniform dist on T^2 torus embedded in R^3
+        # Example 1 in Zappa & Holmes-Cerfon (2018)
+        # Run 1-sample KS tests on known (phi, theta) marginals
+
+        # define problem params
+        R, r = 1.0, 0.5
+        rng_key = jax.random.key(1)
+
+        # check problem functions are correct
+        constraint_fn = partial(testutils.torus_constraint, R, r)
+        self.assertGreater(
+            jnp.abs(constraint_fn(jnp.zeros(3))[0]), 0.1
+        )
+        param_fn = partial(testutils.torus_param, R, r)
+        inv_param_fn = partial(testutils.inv_torus_param, R, r)
+        rng_key, angles_key, mcmc_key = jax.random.split(rng_key, 3)
+        theta, phi = 2*jnp.pi*jax.random.uniform(angles_key, (2,2**10))
+        theta2, phi2 = inv_param_fn(*param_fn(theta, phi))
+        self.assertTrue(jnp.allclose(theta, theta2))
+        self.assertTrue(jnp.allclose(phi, phi2))
+        self.assertLess(
+            jnp.abs(jax.vmap(constraint_fn,in_axes=(1,))(param_fn(theta, phi))).max(),
+            1e-6
+        )
+
+        # mcmc sampling
+        # use thinning to approximate independent sampling so KS test
+        # assumption is "less broken"
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=lambda x: jnp.zeros_like(x,shape=()), # uniform
+            constraint_fn=constraint_fn,
+            solver_options={'mode': 'direct'},
+            # use fixed step size
+            # same as in paper, gives ~ 68% acc prob
+            init_base_step_size = 0.5,
+            selector = selectors.FixedStepSizeSelector()
+        )
+        mcmc = MCMC(kernel,num_warmup=1024,num_samples=2**15,thinning=32)
+        mcmc.run(mcmc_key, init_params=jnp.ones(3))
+        samples = mcmc.get_samples()
+        theta, phi = inv_param_fn(*samples.T)
+
+        # KS tests
+        theta_cdf = partial(stats.uniform.cdf, scale=2*np.pi)
+        phi_pdf_fn = lambda x: (1+(r/R)*np.cos(x)) / (2*np.pi)
+        phi_cdf = np.vectorize(
+            lambda q: integrate.quad(phi_pdf_fn, np.zeros_like(q), q)[0]
+        )
+        self.assertAlmostEqual(phi_cdf(2*np.pi), 1.0)
+        self.assertGreater(stats.ks_1samp(theta, theta_cdf).pvalue, 0.01)
+        self.assertGreater(stats.ks_1samp(phi, phi_cdf).pvalue, 0.01)
 
 
 
