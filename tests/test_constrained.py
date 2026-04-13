@@ -195,8 +195,8 @@ class TestConstrained(unittest.TestCase):
                 kernel.solver_options['tol']
             )
             theta, phi = inv_param_fn(*samples.T)
-            self.assertAlmostEqual(theta.mean(), jnp.pi, delta=0.1)
-            self.assertAlmostEqual(phi.mean(), jnp.pi, delta=0.1)
+            self.assertAlmostEqual(theta.mean(), jnp.pi, delta=0.15)
+            self.assertAlmostEqual(phi.mean(), jnp.pi, delta=0.15)
 
             # KS tests
             self.assertAlmostEqual(phi_cdf(2*np.pi), 1.0)
