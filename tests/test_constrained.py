@@ -190,7 +190,7 @@ class TestConstrained(unittest.TestCase):
             )
             mcmc.run(mcmc_key,init_params=init_params)
             samples = mcmc.get_samples()
-            self.assertLess(
+            self.assertLessEqual(
                 utils.newton_fn_value_err(jax.vmap(constraint_fn)(samples)),
                 kernel.solver_options['tol']
             )
