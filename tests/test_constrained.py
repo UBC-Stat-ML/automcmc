@@ -59,10 +59,10 @@ class TestConstrained(unittest.TestCase):
                 utils.newton_fn_value_err(constraint_fn(state.x)) < tol and
                 state.idiosyncratic.is_satisfied
             )
-            self.assertTrue(jnp.allclose(
+            self.assertTrue(kernel.close_in_ambient_space(
                 # due to the characteristics of the problem, solution must
                 # coincide with the orthogonal projection
-                state.x, init_params / jnp.sqrt(n_dim), rtol=0.01
+                state.x, init_params / jnp.sqrt(n_dim)
             ))
 
             # test log joint and velocity refreshment
@@ -90,11 +90,13 @@ class TestConstrained(unittest.TestCase):
                 utils.newton_fn_value_err(constraint_fn(state_half.x)) < tol and
                 state_half.idiosyncratic.is_satisfied
             )
-            self.assertFalse(jnp.allclose(state_half.x, state.x, atol=10*tol, rtol=0.01))
+            self.assertFalse(kernel.close_in_ambient_space(
+                    state_half.x, state.x
+            ))
             self.assertAlmostEqual(
                 jnp.abs(jnp.dot(state_half.p_flat,state_half.idiosyncratic.Q))[0],
                 0,
-                delta=tol
+                delta=10*tol
             )
             self.assertAlmostEqual(
                 # due to nature of this problem, velocities are also rotating around, and
@@ -110,12 +112,12 @@ class TestConstrained(unittest.TestCase):
                 state_onehalf.idiosyncratic.is_satisfied
             )
             state_two = kernel.involution_aux(state_onehalf)
-            self.assertTrue(
-                jnp.allclose(state_two.x, state.x, atol=10*tol, rtol=0.01)
-            )
-            self.assertTrue(
-                jnp.allclose(state_two.p_flat, state.p_flat, atol=10*tol, rtol=0.01)
-            )
+            self.assertTrue(kernel.close_in_ambient_space(
+                state_two.x, state.x
+            ))
+            self.assertTrue(kernel.close_in_ambient_space(
+                state_two.p_flat, state.p_flat
+            ))
 
 
 
