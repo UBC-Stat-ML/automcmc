@@ -70,6 +70,7 @@ as well as a minimum effective sample size of over 100.
 
 ## TODO
 
+- Try the low-rank preconditioner of [Hird & Livingstone (2026)](https://arxiv.org/abs/2604.09286)
 - autoHMC with randomized number of steps (RHMC)
 - Re-implement the `MixDiagonalPreconditioner` in the new framework
 
