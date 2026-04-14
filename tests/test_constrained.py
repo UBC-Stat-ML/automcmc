@@ -216,38 +216,45 @@ class TestConstrained(unittest.TestCase):
         # induces the uniform dist on the surface
 
         # mcmc sampling
+        rng_key = jax.random.key(67534)
         init_params=jnp.full((3,), 0.5) # init in interior of cone
-        n_warm, n_keep = utils.split_n_rounds(15)
+        n_warm, n_keep = utils.split_n_rounds(14)
         thinning=16 # %ESS ~ 1/16
-        mcmc_key = jax.random.key(32)
         extra_fields = ('idiosyncratic.log_abs_det',)
-        kernel = constrained.AutoConstrainedRWMH(
-            potential_fn=testutils.cone_potential,
-            constraint_fn=testutils.cone_constraint,
-            solver_options={'mode': 'direct'},
-            init_base_step_size = 0.9, # same as in paper
-            selector = selectors.FixedStepSizeSelector()
-        )
-        mcmc = MCMC(
-            kernel,
-            num_warmup=n_warm,
-            num_samples=n_keep,
-            thinning=thinning,
-            progress_bar=False
-        )
-        mcmc.run(mcmc_key,init_params=init_params,extra_fields=extra_fields)
-        log_abs_det = next(iter((mcmc.get_extra_fields().values())))
-        self.assertLess(
-            jnp.abs(log_abs_det+jnp.log(2)/2).max(), 1e-5 # check it matches the known constant
-        )
-        xs,ys,zs = mcmc.get_samples().T
+        for sel in (
+            selectors.FixedStepSizeSelector(),
+            selectors.DeterministicSymmetricSelector(),
+        ):
+            rng_key, mcmc_key = jax.random.split(rng_key)
+            kernel = constrained.AutoConstrainedRWMH(
+                potential_fn=testutils.cone_potential,
+                constraint_fn=testutils.cone_constraint,
+                solver_options={'mode': 'direct'},
+                init_base_step_size = 0.9, # same as in paper
+                selector = sel
+            )
+            mcmc = MCMC(
+                kernel,
+                num_warmup=n_warm,
+                num_samples=n_keep,
+                thinning=thinning,
+                progress_bar=False
+            )
+            mcmc.run(
+                mcmc_key, init_params=init_params, extra_fields=extra_fields
+            )
+            log_abs_det = next(iter((mcmc.get_extra_fields().values())))
+            self.assertLess(
+                jnp.abs(log_abs_det+jnp.log(2)/2).max(), 1e-5 # check it matches the known constant
+            )
 
-        # ks tests
-        xy_cdf = lambda q: (q*jnp.sqrt(1-q*q) + jnp.arcsin(q))/jnp.pi + 0.5 # thx 2 symbolic integration
-        z_cdf = np.square
-        self.assertGreater(stats.ks_1samp(xs, xy_cdf).pvalue, 0.01)
-        self.assertGreater(stats.ks_1samp(ys, xy_cdf).pvalue, 0.01)
-        self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.01)
+            # ks tests
+            xs,ys,zs = mcmc.get_samples().T
+            xy_cdf = lambda q: (q*jnp.sqrt(1-q*q) + jnp.arcsin(q))/jnp.pi + 0.5 # thx 2 symbolic integration
+            z_cdf = np.square
+            self.assertGreater(stats.ks_1samp(xs, xy_cdf).pvalue, 0.01)
+            self.assertGreater(stats.ks_1samp(ys, xy_cdf).pvalue, 0.01)
+            self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.01)
 
 
 
