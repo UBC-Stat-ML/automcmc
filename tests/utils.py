@@ -70,8 +70,17 @@ def make_eight_schools():
 # constrained problems
 #######################################
 
-# uniform dist on T^2 torus embedded in R^3
+# T^2 torus embedded in R^3
 # Example 1 in Zappa & Holmes-Cerfon (2018)
+#   F(x,y,z)=(R - sqrt{x^2+y^2})^2 + z^2 - r^2
+#   dF/dx = 2x(R - sqrt{x^2+y^2})/sqrt{x^2+y^2} = 2x(R/sqrt{x^2+y^2} - 1)
+#   dF/dy = 2y(R/sqrt{x^2+y^2} - 1) // symmetry
+#   dF/dz = 2z
+# => JJ^T = 4[x^2+y^2](R/sqrt{x^2+y^2} - 1)^2 + 4z^2
+#   = 4(R - sqrt{x^2+y^2})^2 + 4z^2
+#   = 4[F(x,y,z)+r^2]
+# So when F(x,y,z)=0 and also r=1/2, we have
+#   JJ^T = 4/4 = 1 => |JJ^T|^{-1/2} = 1 => log(|JJ^T|^{-1/2}) = 0
 def torus_constraint(R, r, x):
     return jnp.array([
         jnp.square(R - jnp.linalg.norm(x[:-1])) + x[-1]*x[-1] - r*r

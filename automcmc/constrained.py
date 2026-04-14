@@ -88,6 +88,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             preconditioner=preconditioning.IdentityDiagonalPreconditioner(), # we need rotational symmetry
             constraint_fn=None, # aim is to target `constraint_fn=0`. Input var is x_flat.
             solver_options = {},
+            x_tols = {},
             **kwargs
         ):
         super().__init__(*args,preconditioner=preconditioner,**kwargs)
@@ -97,6 +98,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
           f" but I got instead {type(self.preconditioner)}"
         self.constraint_fn = constraint_fn
         self.solver_options = solver_options
+        self.x_tols = x_tols
 
     # TODO: using vjp for J^Tz=(z^TJ)^T instead of Qz would be more memory
     # efficient **if** we can get rid of Q in projection to tangent space
@@ -137,12 +139,27 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         if 'tol' not in self.solver_options:
             self.solver_options['tol'] = utils.newton_default_tol(x_flat)
 
+        # set the ambient space tolerances (`allclose` parameters)
+        # prefer using only rtol, but need to have atol>0 if the origin
+        # satisfies the constraint
+        if 'rtol' not in self.x_tols:
+            self.x_tols['rtol'] = jnp.sqrt(jnp.finfo(x_flat.dtype).eps)
+        if 'atol' not in self.x_tols:
+            fn_err_at_origin = utils.newton_fn_value_err(
+                self.constraint_fn(jnp.zeros_like(x_flat))
+            )
+            self.x_tols['atol'] = (
+                jnp.zeros_like(self.x_tols['rtol'])
+                if fn_err_at_origin >= self.solver_options['tol']
+                else len(x_flat)*self.solver_options['tol'] # recommended in Xu&Holmes-Cerfon(2024)
+            )
+
         # initialize the constraint state
         cs = make_constraint_state(
             False, jax.jacrev(self.constraint_fn)(x_flat)
         )
 
-        # project to manifold
+        # project to zero level set
         x_flat, cs, diagnostics = self.proj_level_set(x_flat, cs)
         if not cs.is_satisfied:
             raise ValueError(
@@ -167,8 +184,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
 
     # need to
     #   - add the log of the co-area formula factor
-    #   - make the likelihood 0 when err > tol so that solver failures are
-    #     handled gracefully by the autostep machinery
+    #   - make the likelihood 0 when constraint is not satisfied, so that
+    #     solver failures are handled gracefully by the autostep executors
     def postprocess_logprior_and_loglik(self, state, log_prior, log_lik):
         cs = state.idiosyncratic
         log_prior += cs.log_abs_det
@@ -176,8 +193,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         return log_prior, log_lik
 
     def close_in_ambient_space(self, x, y):
-        tol = self.solver_options['tol']
-        return jnp.allclose(x, y, atol=10*tol, rtol=0.01)
+        return jnp.allclose(
+            x, y, atol=self.x_tols['atol'], rtol=self.x_tols['rtol']
+        )
 
     def maybe_build_roundtrip_state(
             self,

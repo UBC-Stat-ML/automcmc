@@ -130,18 +130,24 @@ class TestConstrained(unittest.TestCase):
             ))
 
     def test_sampling_torus(self):
-        # uniform dist on T^2 torus embedded in R^3
+        # T^2 torus embedded in R^3
         # Example 1 in Zappa & Holmes-Cerfon (2018)
-        # Run 1-sample KS tests on known (phi, theta) marginals
+        # Note: this example satisfies JJ^T = constant, which for the
+        # particular choices of (R=1,r=1/2) used here give JJ^T = 1.
+        # Hence, the Lebesgue measure induces the uniform dist on the surface
+        # This is why we can compare to the results in the paper, which
+        # focus on the uniform dist on the torus
+
+        # define problem params
+        R, r = 1.0, 0.5
+        rng_key = jax.random.key(1)
+
+        # Setup 1-sample KS tests on known (phi, theta) marginals
         theta_cdf = partial(stats.uniform.cdf, scale=2*np.pi)
         phi_pdf_fn = lambda x: (1+(r/R)*np.cos(x)) / (2*np.pi)
         phi_cdf = np.vectorize(
             lambda q: integrate.quad(phi_pdf_fn, np.zeros_like(q), q)[0]
         )
-
-        # define problem params
-        R, r = 1.0, 0.5
-        rng_key = jax.random.key(1)
 
         # check problem functions are correct
         constraint_fn = partial(testutils.torus_constraint, R, r)
@@ -169,6 +175,7 @@ class TestConstrained(unittest.TestCase):
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
         n_warm, n_keep = utils.split_n_rounds(15)
         init_params = jnp.ones(3) # init outside level set on purpose
+        extra_fields = ('idiosyncratic.log_abs_det',)
         for sel in (
             selectors.FixedStepSizeSelector(),
             selectors.DeterministicSymmetricSelector(),
@@ -188,7 +195,9 @@ class TestConstrained(unittest.TestCase):
                 thinning=32, # %ESS ~ 1/32
                 progress_bar=False
             )
-            mcmc.run(mcmc_key,init_params=init_params)
+            mcmc.run(mcmc_key,init_params=init_params, extra_fields=extra_fields)
+            log_abs_det = next(iter((mcmc.get_extra_fields().values())))
+            assert jnp.abs(log_abs_det).max() < 1e-5 # check that they are all ~0
             samples = mcmc.get_samples()
             self.assertLessEqual(
                 utils.newton_fn_value_err(jax.vmap(constraint_fn)(samples)),

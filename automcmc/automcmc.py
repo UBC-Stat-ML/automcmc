@@ -41,7 +41,7 @@ It consists of the fields:
  - **x** - the sample field, corresponding to a pytree representing a value in
    unconstrained space.
  - **p_flat** - flattened momentum/velocity vector.
- - **log_prior** - log-prior density of ``x``. Includes possible log-abs-det-jac 
+ - **log_prior** - log-prior density of ``x``. Includes possible log-abs-det-jac
    values associated with transformations to unconstrained space.
  - **log_lik** - log-likelihood of ``x``.
  - **log_joint** - log-prior plus log-likelihood plus log density of ``p_flat``.
@@ -49,7 +49,7 @@ It consists of the fields:
  - **stats** - an ``AutoStepStats`` object.
  - **base_step_size** - the initial step size. Fixed within a round but updated
    at the end of it.
- - **base_precond_state** - an instance of ``PreconditionerState``. Fixed within a 
+ - **base_precond_state** - an instance of ``PreconditionerState``. Fixed within a
    round but updated at the end of it.
  - **inv_temp**: optional inverse temperature parameter to target an annealed
    version of a model's distribution.
@@ -60,7 +60,7 @@ It consists of the fields:
 class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
     """
     Interface for MCMC samplers that can be understood as automatically
-    tuning their key parameters at each step. Any other hyperparameter is 
+    tuning their key parameters at each step. Any other hyperparameter is
     assumed to be tunable via round-based adaptation.
 
     Additionally, we build native support for tempered (or annealed) sampling
@@ -96,7 +96,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
             None if init_inv_temp is None else jnp.array(init_inv_temp)
         )
         self.optimize_init_params = optimize_init_params
-    
+
     def init_state(self, initial_params, rng_key):
         """
         Initialize the state of the sampler.
@@ -109,9 +109,9 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         return AutoMCMCState(
             initial_params,
             jnp.zeros_like(x_flat),
-            jnp.array(0, x_flat.dtype), # Note: not the actual log-prior; needs to be updated 
-            jnp.array(0, x_flat.dtype), # Note: not the actual log-lik; needs to be updated 
-            jnp.array(0, x_flat.dtype), # Note: not the actual log-joint; needs to be updated 
+            jnp.array(0, x_flat.dtype), # Note: not the actual log-prior; needs to be updated
+            jnp.array(0, x_flat.dtype), # Note: not the actual log-lik; needs to be updated
+            jnp.array(0, x_flat.dtype), # Note: not the actual log-joint; needs to be updated
             rng_key,
             statistics.make_stats_recorder(x_flat, self.preconditioner),
             jnp.array(self.init_base_step_size),
@@ -121,10 +121,10 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
             None if self.init_inv_temp is None else jnp.array(self.init_inv_temp),
             None
         )
-    
+
     def init_extras(self, state):
         """
-        Carry out additional initializations not required by all 
+        Carry out additional initializations not required by all
         :class:`AutoMCMC` kernels.
         """
         return state
@@ -145,23 +145,23 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
                         jax.vmap(random.split)(rng_key), 0, 1
                     )
                 else:
-                    rng_key, rng_key_init = random.split(rng_key)                    
-                
+                    rng_key, rng_key_init = random.split(rng_key)
+
                 (
-                    new_params, 
-                    self._potential_fn, 
+                    new_params,
+                    self._potential_fn,
                     self._postprocess_fn
                 ) = initialization.init_model(
                     self._model, rng_key_init, model_args, model_kwargs
                 )
                 if initial_params is None:
                     initial_params = new_params
-                
+
                 # initialize the logprior_and_loglik function
                 self.logprior_and_loglik = partial(
-                    tempering.model_logprior_and_loglik, 
-                    self._model, 
-                    model_args, 
+                    tempering.model_logprior_and_loglik,
+                    self._model,
+                    model_args,
                     model_kwargs
                 )
             elif self._potential_fn is not None:
@@ -171,7 +171,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
                     "You need to provide a model, a logprior_and_loglik, or a " \
                     "potential function"
                 )
-        
+
         # maybe optimize the initial parameters
         if self.optimize_init_params:
             if is_vectorized:
@@ -185,8 +185,8 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
                 else {}
             )
             initial_params = initialization.optimize_init_params(
-                self.logprior_and_loglik, 
-                initial_params, 
+                self.logprior_and_loglik,
+                initial_params,
                 self.init_inv_temp,
                 **settings
             )
@@ -213,7 +213,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
     @property
     def model(self):
         return self._model
-    
+
     @abstractmethod
     def sample_single_chain(self, state, model_args, model_kwargs):
         """
@@ -233,9 +233,9 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         return self._sample_fn(state, model_args, model_kwargs)
 
     def get_diagnostics_str(self, state):
-        return "avg_ss={:.1e}, rr={:.2f}, ap={:.2f}, lj={:.1e}".format(
+        return "avg_ss={:.1e}, rr={:.2f}, ap={:.2f}, lj={: .1e}".format(
             state.stats.adapt_stats.mean_step_size,
-            state.stats.adapt_stats.rev_rate, 
+            state.stats.adapt_stats.rev_rate,
             state.stats.adapt_stats.mean_acc_prob,
             state.log_joint
         )
@@ -244,13 +244,13 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         if self._postprocess_fn is None:
             return util.identity
         return self._postprocess_fn(*model_args, **model_kwargs)
-    
+
     def kinetic_energy(self, state, precond_state):
         """
         Computes the potential energy for any auxiliary variables. The default
-        implementation assumes that the `sample` method does not modify the 
+        implementation assumes that the `sample` method does not modify the
         auxiliary variables (this is true for autoRWMH, for example). In this
-        case, the kinetic energy term cancels in the acceptance ratio so we 
+        case, the kinetic energy term cancels in the acceptance ratio so we
         can simply ignore it.
 
         :param state: Current state.
@@ -258,7 +258,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         :return: Kinetic energy.
         """
         return jnp.zeros_like(state.p_flat[0])
-    
+
     @abstractmethod
     def refresh_aux_vars(self, rng_key, state, precond_state):
         """
@@ -295,14 +295,14 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         new_temp_pot = tempering.tempered_potential_from_logprior_and_loglik(
             new_log_prior, new_log_lik, state.inv_temp
         )
-        
+
         # replace state with updated values and return
         return state._replace(
             log_prior = new_log_prior,
-            log_lik = new_log_lik,            
+            log_lik = new_log_lik,
             log_joint = -(new_temp_pot + new_kinetic_energy)
         )
-    
+
     def is_time_to_adapt(self, stats):
         round = utils.current_round(stats.n_samples)
         last_step = utils.n_steps_in_round(round)
@@ -331,7 +331,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         )
         new_stats = stats._replace(adapt_stats = new_adapt_stats)
         state = state._replace(
-            base_step_size = new_base_step_size, 
+            base_step_size = new_base_step_size,
             base_precond_state = new_base_precond_state,
             stats = new_stats
         )
@@ -346,4 +346,4 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         #     ms=new_stats.adapt_stats.mean_step_size, ma=new_stats.adapt_stats.mean_acc_prob,
         #     m=new_stats.adapt_stats.sample_mean,v=new_stats.adapt_stats.sample_var)
         return state
-    
+
