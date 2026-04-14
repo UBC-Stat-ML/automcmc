@@ -70,7 +70,7 @@ def make_eight_schools():
 # constrained problems
 #######################################
 
-# T^2 torus embedded in R^3
+####### T^2 torus embedded in R^3 #####
 # Example 1 in Zappa & Holmes-Cerfon (2018)
 #   F(x,y,z)=(R - sqrt{x^2+y^2})^2 + z^2 - r^2
 #   dF/dx = 2x(R - sqrt{x^2+y^2})/sqrt{x^2+y^2} = 2x(R/sqrt{x^2+y^2} - 1)
@@ -99,6 +99,38 @@ def inv_torus_param(R, r, x, y, z):
     d = jnp.hypot(x,y) - R
     phi = arctan2pi(z, d)
     return (theta, phi)
+
+###### cone embedded in R^3 #####
+# Example 2 in Zappa & Holmes-Cerfon (2018)
+# inequality constraints passed through pontential fn
+#   F(x,y,z) = z - sqrt(x^2 + y^2)
+#   dF/dx = x(x^2 + y^2)^{-1/2}
+#   dF/dy = y(x^2 + y^2)^{-1/2}
+#   dF/dz =  1
+#    JJ^T = 1 + x^2(x^2 + y^2)^{-1} + y^2(x^2 + y^2)^{-1}
+#      = 1 + (x^2 + y^2)(x^2 + y^2)^{-1}
+#      = 1 + 1
+#      = 2
+#   |JJ^T|^{-1/2} = 2^{-1/2} => log(|JJ^T|^{-1/2}) = -0.5log(2)
+# It follows that the ambient uniform induces the uniform distribution on each
+# level set (i.e., each cone)
+# Note: this wouldn't be the case if we used the alternative function
+#   G(x,y,z) = z^2 - x^2 + y^2
+# even though G^{-1}({0})=F^{-1}({0})! This is because the general equality is
+#
+#   for all r: G^{-1}({r})=F^{-1}({r^2})
+# Nevertheless, the total integral int dr int_cone(r) must end up being the
+# same since the LHS int_{R^3} f(x) dx is invariant to the choice of F,G.
+def cone_constraint(x):
+    return jnp.array([x[-1] - jnp.linalg.norm(x[:-1])])
+    # return jnp.array([x[-1]*x[-1] - jnp.square(x[:-1]).sum()])
+
+def cone_potential(x):
+    return jnp.where(
+        jnp.logical_and(jnp.square(x[:-1]).sum()<=1, x[-1] >= 0),
+        jnp.zeros_like(x, shape=()),
+        jnp.inf,
+    )
 
 ###############################################################################
 # diagnostics

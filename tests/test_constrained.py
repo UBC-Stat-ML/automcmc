@@ -135,19 +135,15 @@ class TestConstrained(unittest.TestCase):
         # Note: this example satisfies JJ^T = constant, which for the
         # particular choices of (R=1,r=1/2) used here give JJ^T = 1.
         # Hence, the Lebesgue measure induces the uniform dist on the surface
-        # This is why we can compare to the results in the paper, which
-        # focus on the uniform dist on the torus
 
         # define problem params
         R, r = 1.0, 0.5
         rng_key = jax.random.key(1)
 
         # Setup 1-sample KS tests on known (phi, theta) marginals
-        theta_cdf = partial(stats.uniform.cdf, scale=2*np.pi)
-        phi_pdf_fn = lambda x: (1+(r/R)*np.cos(x)) / (2*np.pi)
-        phi_cdf = np.vectorize(
-            lambda q: integrate.quad(phi_pdf_fn, np.zeros_like(q), q)[0]
-        )
+        theta_cdf_fn = partial(stats.uniform.cdf, scale=2*np.pi)
+        # phi_pdf_fn = lambda x: (1+(r/R)*np.cos(x)) / (2*np.pi)
+        phi_cdf_fn = lambda q: (q+(r/R)*jnp.sin(q)) / (2*jnp.pi)
 
         # check problem functions are correct
         constraint_fn = partial(testutils.torus_constraint, R, r)
@@ -174,6 +170,7 @@ class TestConstrained(unittest.TestCase):
         mode = "direct"
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
         n_warm, n_keep = utils.split_n_rounds(15)
+        thinning=32 # %ESS ~ 1/32
         init_params = jnp.ones(3) # init outside level set on purpose
         extra_fields = ('idiosyncratic.log_abs_det',)
         for sel in (
@@ -192,12 +189,12 @@ class TestConstrained(unittest.TestCase):
                 kernel,
                 num_warmup=n_warm,
                 num_samples=n_keep,
-                thinning=32, # %ESS ~ 1/32
+                thinning=thinning,
                 progress_bar=False
             )
             mcmc.run(mcmc_key,init_params=init_params, extra_fields=extra_fields)
             log_abs_det = next(iter((mcmc.get_extra_fields().values())))
-            assert jnp.abs(log_abs_det).max() < 1e-5 # check that they are all ~0
+            self.assertLess(jnp.abs(log_abs_det).max(), 1e-5) # check that they are all ~0
             samples = mcmc.get_samples()
             self.assertLessEqual(
                 utils.newton_fn_value_err(jax.vmap(constraint_fn)(samples)),
@@ -208,9 +205,49 @@ class TestConstrained(unittest.TestCase):
             self.assertAlmostEqual(phi.mean(), jnp.pi, delta=0.15)
 
             # KS tests
-            self.assertAlmostEqual(phi_cdf(2*np.pi), 1.0)
-            self.assertGreater(stats.ks_1samp(theta, theta_cdf).pvalue, 0.01)
-            self.assertGreater(stats.ks_1samp(phi, phi_cdf).pvalue, 0.01)
+            self.assertGreater(stats.ks_1samp(theta, theta_cdf_fn).pvalue, 0.01)
+            self.assertGreater(stats.ks_1samp(phi, phi_cdf_fn).pvalue, 0.01)
+
+
+    def test_sampling_cone(self):
+        # cone embedded in R^3
+        # Example 2 in Zappa & Holmes-Cerfon (2018)
+        # Note: this example satisfies JJ^T = constant, so the Lebesgue measure
+        # induces the uniform dist on the surface
+
+        # mcmc sampling
+        init_params=jnp.full((3,), 0.5) # init in interior of cone
+        n_warm, n_keep = utils.split_n_rounds(15)
+        thinning=16 # %ESS ~ 1/16
+        mcmc_key = jax.random.key(32)
+        extra_fields = ('idiosyncratic.log_abs_det',)
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=testutils.cone_potential,
+            constraint_fn=testutils.cone_constraint,
+            solver_options={'mode': 'direct'},
+            init_base_step_size = 0.9, # same as in paper
+            selector = selectors.FixedStepSizeSelector()
+        )
+        mcmc = MCMC(
+            kernel,
+            num_warmup=n_warm,
+            num_samples=n_keep,
+            thinning=thinning,
+            progress_bar=False
+        )
+        mcmc.run(mcmc_key,init_params=init_params,extra_fields=extra_fields)
+        log_abs_det = next(iter((mcmc.get_extra_fields().values())))
+        self.assertLess(
+            jnp.abs(log_abs_det+jnp.log(2)/2).max(), 1e-5 # check it matches the known constant
+        )
+        xs,ys,zs = mcmc.get_samples().T
+
+        # ks tests
+        xy_cdf = lambda q: (q*jnp.sqrt(1-q*q) + jnp.arcsin(q))/jnp.pi + 0.5 # thx 2 symbolic integration
+        z_cdf = np.square
+        self.assertGreater(stats.ks_1samp(xs, xy_cdf).pvalue, 0.01)
+        self.assertGreater(stats.ks_1samp(ys, xy_cdf).pvalue, 0.01)
+        self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.01)
 
 
 
