@@ -130,9 +130,10 @@ def newton(
         #   J_f(x) dx = -f(x) ==> x' = x + dx
         if mode == "direct":
             # form full Jacobian and use a direct solver
-            dx = jnp.linalg.solve(jax.jacobian(f)(x), -val0)
+            # use fwd mode since the system is square
+            dx = jnp.linalg.solve(jax.jacfwd(f)(x), -val0)
         elif mode == "gmres":
-            # use GMRES with Jacobian-vector products
+            # use GMRES with Jacobian-vector products (i.e. fwd mode autodiff)
             # Note: we use this solver in a setting where dim^2 storage is ok,
             # and the absolute worst case time complexity O(dim^3) is tolerable
             # every now and then. Therefore, we avoid restarting

@@ -198,7 +198,7 @@ class TestConstrained(unittest.TestCase):
             )
             mcmc.run(mcmc_key,init_params=init_params, extra_fields=extra_fields)
             log_abs_det = next(iter((mcmc.get_extra_fields().values())))
-            self.assertLess(jnp.abs(log_abs_det).max(), 1e-5) # check that they are all ~0
+            self.assertLess(jnp.abs(log_abs_det).max(), kernel.x_tols['atol']) # check that they are all ~0
             samples = mcmc.get_samples()
             self.assertLessEqual(
                 utils.newton_fn_value_err(jax.vmap(constraint_fn)(samples)),
