@@ -93,7 +93,7 @@ def newton(
         the inputs.
     :param int max_iter: maximum number of Newton steps, defaults to 100
     :param str mode: one of `("direct", "gmres")`. The default `"gmres"` uses
-        the iterative GMRES solver together with `jax.jvp` to avoid ever
+        the iterative GMRES solver together with :func:`jax.linearize` to avoid
         forming the full Jacobian. When `mode="direct"`, the full Jacobian is
         formed and the update direction is obtained via a linear solve.
     :return tuple: A tuple of
@@ -136,7 +136,7 @@ def newton(
             # Note: we use this solver in a setting where dim^2 storage is ok,
             # and the absolute worst case time complexity O(dim^3) is tolerable
             # every now and then. Therefore, we avoid restarting
-            jvp = lambda v: jax.jvp(f, (x,), (v,))[1]
+            jvp = jax.linearize(f, x)[1] # faster than e.g. lambda v: jax.jvp(f, (x,), (v,))[1]
             dx = jax.scipy.sparse.linalg.gmres(
                 jvp, -val0, tol=tol, restart=dim
             )[0]

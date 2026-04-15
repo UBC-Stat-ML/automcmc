@@ -54,10 +54,7 @@ class TestConstrained(unittest.TestCase):
             kernel = constrained.AutoConstrainedRWMH(
                 potential_fn=potential_fn,
                 constraint_fn=constraint_fn,
-                solver_options={
-                    'tol': 10*jnp.finfo(jnp.float32).eps,
-                    'mode': mode
-                }
+                solver_options={'mode': mode}
             )
 
             # test initialization to feasible set

@@ -145,14 +145,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         if 'rtol' not in self.x_tols:
             self.x_tols['rtol'] = jnp.sqrt(jnp.finfo(x_flat.dtype).eps)
         if 'atol' not in self.x_tols:
-            fn_err_at_origin = utils.newton_fn_value_err(
-                self.constraint_fn(jnp.zeros_like(x_flat))
-            )
-            self.x_tols['atol'] = (
-                jnp.zeros_like(self.x_tols['rtol'])
-                if fn_err_at_origin >= self.solver_options['tol']
-                else len(x_flat)*self.solver_options['tol'] # recommended in Xu&Holmes-Cerfon(2024)
-            )
+            self.x_tols['atol'] = len(x_flat)*self.solver_options['tol'] # recommended in Xu&Holmes-Cerfon(2024)
 
         # initialize the constraint state
         cs = make_constraint_state(
