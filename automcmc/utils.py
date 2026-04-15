@@ -71,7 +71,7 @@ def n_warmup_to_adapt_rounds(n_warmup):
 ###############################################################################
 
 def newton_default_tol(x):
-    return 10*jnp.finfo(x.dtype).eps
+    return 100*jnp.finfo(x.dtype).eps
 
 def newton_fn_value_err(val):
     return jnp.abs(val).max()
