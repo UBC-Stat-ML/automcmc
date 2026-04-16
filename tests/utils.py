@@ -1,5 +1,9 @@
+import math
+
 import numpy
+
 import jax.numpy as jnp
+
 import numpyro
 import numpyro.distributions as dist
 
@@ -69,6 +73,19 @@ def make_eight_schools():
 #######################################
 # constrained problems
 #######################################
+
+# orthonormal rows constraint
+def orthonormal_constraint(x):
+    n = len(x)
+    d = math.isqrt(n)
+    assert d*d == n
+    X = x.reshape((d,d))
+    G = jnp.inner(X,X)
+    triu_inds = jnp.triu_indices(d)
+    G_triu = G[triu_inds[0],triu_inds[1]]
+    I_triu = jnp.identity(d)[triu_inds[0],triu_inds[1]]
+    return G_triu - I_triu
+
 
 ####### T^2 torus embedded in R^3 #####
 # Example 1 in Zappa & Holmes-Cerfon (2018)

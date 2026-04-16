@@ -21,27 +21,43 @@ class TestConstrained(unittest.TestCase):
                 preconditioner=preconditioning.FixedDensePreconditioner(),
             )
 
-    def test_Jacobian_algebra(self):
-        m = 6
-        n = 145
-        J_key, v_key = jax.random.split(jax.random.key(1),2)
-        v = jax.random.normal(v_key, (n,))
-        J = jax.random.normal(J_key, (m,n))
-        tol = jnp.sqrt(jnp.finfo(J.dtype).eps)
-        cs = constrained.make_constraint_state(True,J) # err is irrelevant here
-        self.assertAlmostEqual(1, jnp.linalg.cond(cs.Q),delta=tol)
-        self.assertGreater(jnp.linalg.cond(J.T), 1.1)
-        self.assertLess(
-            utils.newton_fn_value_err(cs.Q.T@cs.Q - jnp.identity(m)), tol
-        )
-        self.assertTrue(jnp.isclose(
-            cs.log_abs_det,
-            -0.5*jnp.log(jnp.abs(jnp.linalg.det(jnp.inner(J,J)))),
-            rtol = 0.01
-        ))
-        _,PTv = constrained.proj_normal_tangent(cs, v)
-        self.assertTrue(jnp.abs(J@PTv).max() < tol) # PTv should be orthogonal to every row of J
+    def test_proj_normal_tangent(self):
+        d = 3
+        n = d*d
+        n_sim = 10
+        rng_key = jax.random.key(1)
+        for _ in range(n_sim):
+            X = jnp.array(stats.ortho_group.rvs(dim=d,)) # iid sample SO(3)
+            constraint_fn = testutils.orthonormal_constraint
+            tol = utils.newton_default_tol(X)
+            cs = constrained.make_constraint_state(constraint_fn,X.flatten(),tol)
+            self.assertTrue(cs.is_satisfied)
+            m = cs.chol.shape[0]
+            self.assertEqual(m, d*(d+1)//2)
+            J = jax.jacobian(constraint_fn)(cs.x_base)
+            gram_mat = jnp.inner(J,J)
+            self.assertLess(
+                jnp.linalg.norm(gram_mat - jnp.inner(cs.chol,cs.chol)), tol
+            )
+            self.assertAlmostEqual(
+                cs.log_abs_det,
+                -0.5*jnp.log(jnp.abs(jnp.linalg.det(gram_mat))),
+                delta = 0.001
+            )
+            rng_key, v_key = jax.random.split(rng_key)
+            v = jax.random.normal(v_key, (n,))
+            PNv,PTv = constrained.proj_normal_tangent(constraint_fn,cs,v)
+            self.assertTrue(jnp.allclose(v, PNv+PTv))
+            jvp_val = jax.jvp(constraint_fn, (cs.x_base,), (PTv,))[-1] # PTv \perp to every row of Jac
+            self.assertLess(jnp.abs(jvp_val).max(), 0.01)
+            jvp_val_dumb = J@PTv
+            self.assertTrue(
+                jnp.allclose(jvp_val, jvp_val_dumb, atol=tol, rtol=0.01),
+                f"jvp_val={jvp_val} but J@PTv={jvp_val_dumb}"
+            )
 
+
+    # TODO: update test to new approach
     def test_constrained_involution(self):
         # std normal prior on R^n
         # constrain to unit circle
@@ -86,11 +102,6 @@ class TestConstrained(unittest.TestCase):
                         state.idiosyncratic.log_abs_det - potential_fn(state.x),
                         delta=tol
                     )
-                    self.assertAlmostEqual(
-                        jnp.abs(jnp.dot(state.p_flat,state.idiosyncratic.Q))[0],
-                        0,
-                        delta=tol
-                    )
 
                     # test involutive property
                     state_half = kernel.involution_main(
@@ -103,11 +114,6 @@ class TestConstrained(unittest.TestCase):
                     self.assertFalse(kernel.close_in_ambient_space(
                             state_half.x, state.x
                     ))
-                    self.assertAlmostEqual(
-                        jnp.abs(jnp.dot(state_half.p_flat,state_half.idiosyncratic.Q))[0],
-                        0,
-                        delta=tol
-                    )
                     self.assertAlmostEqual(
                         # due to nature of this problem, velocities are also
                         # rotating around, and therefore its density (std

@@ -15,7 +15,7 @@ class TestUtils(unittest.TestCase):
             self.assertEqual(n_rounds, utils.current_round(n_samples))
 
     def test_newton(self):
-        # example from 
+        # example from
         # https://github.com/jax-ml/jax/discussions/17975#discussion-5707669
         def f(x):
             x, y, z = x
@@ -31,7 +31,7 @@ class TestUtils(unittest.TestCase):
             x0 = jnp.array([0.2, 0.3, 0.5])
             x, n, val, err, d_err, is_satisfied = utils.newton(f, x0, mode=mode)
             self.assertTrue(is_satisfied)
-            self.assertLess(err, 1e-3)
+            self.assertLess(err, utils.newton_default_tol(x))
             self.assertLess(d_err, 0)
             self.assertTrue(jnp.allclose(x, x_true, rtol=0.05))
 

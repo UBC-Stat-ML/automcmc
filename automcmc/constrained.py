@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import NamedTuple, Callable
 
 import jax
 from jax.typing import ArrayLike
@@ -13,56 +13,88 @@ class ConstraintState(NamedTuple):
     evaluated at a specific point in space.
 
     Attributes:
-        is_satisfied: true if the constraint is satisfied up to tolerance.
-        Q: Q factor of the QR decomposition of :math:`J_x^T` where :math:`J_x`
-            is the Jacobian evaluated at :math:`x`. Used for projection onto
-            normal space.
+        is_satisfied: true if `f(x_base)=0` up to tolerance.
+        x_base: point that dictates the level set :math:`f^{-1}(\\{x\\})` and
+            the tangent and normal spaces that determine the projections onto
+            said level set. We assume `x_base` is flattened.
+        chol: Cholesky decomposition of :math:`J_xJ_x^T` where :math:`J_x`
+            is the Jacobian of the constraint evaluated at `x_base`.
         log_abs_det: log of :math:`|(J_xJ_x^T)|^{-1/2}` computed using the
-            R factor of the QR decomposition.
+            Cholesky decomposition.
     """
     is_satisfied: ArrayLike
-    Q: ArrayLike
-    log_abs_det: ArrayLike
+    x_base: ArrayLike
+    chol: jax.Array
+    log_abs_det: jax.Array
 
-def make_constraint_state(is_satisfied: ArrayLike, J: ArrayLike):
+def make_constraint_state(
+        constraint_fn: Callable[[ArrayLike], jax.Array],
+        x_base: ArrayLike,
+        tol: ArrayLike
+    ) -> ConstraintState:
     """
     Build :class:`ConstraintState`.
 
-    :param is_satisfied: is the constraint satisfied?
-    :param J: Jacobian matrix of shape `(m,n)` with `m<n`.
+    :param constraint_fn: the constraint function.
+    :param x_base: base point; see :class:`ConstraintState`.
+    :param tol: tolerance for constraint satisfiability.
+    :return: a :class:`ConstraintState` corresponding to `x_base`.
     """
+    J, f_val = jax.jacrev(lambda x: 2*(constraint_fn(x),),has_aux=True)(x_base) # get Jacobian and value in one pass
+    is_satisfied = utils.newton_fn_value_err(f_val) < tol
     m, n = jnp.shape(J)
     assert m < n
-    Q,R = jnp.linalg.qr(J.T)
-    log_abs_det = -jnp.log(jnp.abs(jnp.diag(R))).sum()
-    return ConstraintState(is_satisfied, Q, log_abs_det)
+    chol = jax.lax.linalg.cholesky(jnp.inner(J,J), symmetrize_input=False) # (JJ^T)^T=JJ^T -> no need to force it
+    log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
+    return ConstraintState(is_satisfied, x_base, chol, log_abs_det)
 
 # project onto normal (N) space
-# P[N]v = J^T(JJ^T)^{-1}Jv = Q(Q^Tv)
-# Cost: O(mn^2 + nm^2)
-def proj_normal(cs: ConstraintState, v: ArrayLike) -> jax.Array:
+#   P[N]v = J^T(JJ^T)^{-1}Jv
+# Following Xu&Holmes-Cerfon(2024), we can do this in steps
+#   1) u = Jv --> single jvp, O(1 func eval). For norm-like f, this is O(nm)
+#   2) solve for w: LL^Tw=u <=> w = L^{-T}[L^{-1}u]
+#                           <=> t=L^{-1}u and w=L^{-T}t
+#       a) O(m^2) triangular solve for t: Lt = u
+#       b) O(m^2) triangular solve for w: L^Tw=t
+#   3) P[N]v = J^Tw = (w^TJ)^T --> single vjp, O(1 func eval)
+# Cost: O(nm + m^2)
+def proj_normal(
+        constraint_fn: Callable[[ArrayLike], jax.Array],
+        cs: ConstraintState,
+        v: ArrayLike
+    ) -> jax.Array:
     """
-    Project a vector onto the normal space at `x`.
+    Project a vector onto the normal space at `cs.x_base`.
 
-    :param v: vector of length `n`.
+    :param constraint_fn: the constraint function.
+    :param cs: a :class:`ConstraintState` dictating the normal space.
+    :param v: vector to project.
     :return: normal component of `v`.
     """
-    return cs.Q @ jnp.dot(v, cs.Q)
+    u = jax.jvp(constraint_fn, (cs.x_base,), (v,))[-1]
+    t = jax.lax.linalg.triangular_solve(cs.chol, u, lower=True) # == jnp.linalg.solve(cs.chol, u)
+    w = jax.lax.linalg.triangular_solve(
+        cs.chol, t, lower=True, transpose_a=True # == jnp.linalg.solve(cs.chol.T, t)
+    )
+    f_vjp = jax.vjp(constraint_fn, cs.x_base)[-1]
+    return f_vjp(w)[0]
 
 # project onto normal (N) and tangent (T) spaces
-# P[T] = v - P[N]v
-# Cost: O(mn^2 + nm^2)
+# same as cost of just doing the normal part
 def proj_normal_tangent(
+        constraint_fn: Callable[[ArrayLike], jax.Array],
         cs: ConstraintState,
         v: ArrayLike
     ) -> tuple[jax.Array, jax.Array]:
     """
-    Project a vector onto the normal and tangent spaces at `x`.
+    Project a vector onto the normal and tangent spaces at `cs.x_base`.
 
-    :param v: vector of length `n`.
+    :param constraint_fn: the constraint function.
+    :param cs: a :class:`ConstraintState` dictating the normal space.
+    :param v: vector to project.
     :return: normal and tangent components of `v`.
     """
-    PNv = proj_normal(cs, v)
+    PNv = proj_normal(constraint_fn, cs, v)
     return (PNv, v - PNv)
 
 
@@ -100,33 +132,35 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         self.solver_options = solver_options
         self.x_tols = x_tols
 
-    # TODO: using vjp for J^Tz=(z^TJ)^T instead of Qz would be more memory
-    # efficient **if** we can get rid of Q in projection to tangent space
     def proj_level_set(
             self,
             x_flat: ArrayLike,
             cs: ConstraintState
         ) -> tuple:
         """
-        Project a point on the constraint set
+        Project a point on the constraint level set along the normal space
+        determined by a :class:`ConstraintState`.
 
         :param ArrayLike x_flat: a vector.
-        :param ConstraintState cs: a :class:`ConstraintState`.
+        :param ConstraintState cs: a :class:`ConstraintState` corresponding to
+            the base point which dictates the normal spaces.
         :return tuple: projected vector, updated :class:`ConstraintState`, and
             solver diagnostics.
         """
-        # project the initial point to the feasible set
-        #   solve for z: 0 = f(x + Qz) => set x' = x + Qz
-        z, *diagnostics, is_satisfied = utils.newton(
-            lambda z: self.constraint_fn(x_flat + cs.Q @ z),
-            jnp.zeros(cs.Q.shape[-1], cs.Q.dtype),
+        # project to the feasible set in the normal directions at cs.x_base
+        #   solve for z: 0 = f(x + J^Tz) => set x' = x + J^Tz
+        # since J^Tz = (z^TJ)^T, we can use vector-Jacobian prods (vjp)
+        f_val, f_vjp = jax.vjp(self.constraint_fn, cs.x_base)
+        z, *diagnostics, _ = utils.newton(
+            lambda z: self.constraint_fn(x_flat + f_vjp(z)[0]),
+            jnp.zeros_like(f_val),
             **self.solver_options
         )
-        x_flat += cs.Q @ z
+        x_flat += f_vjp(z)[0]
 
         # update the constraint state and return
         cs = make_constraint_state(
-            is_satisfied, jax.jacrev(self.constraint_fn)(x_flat)
+            self.constraint_fn, x_flat, self.solver_options['tol']
         )
         return (x_flat, cs, diagnostics)
 
@@ -149,7 +183,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
 
         # initialize the constraint state
         cs = make_constraint_state(
-            False, jax.jacrev(self.constraint_fn)(x_flat)
+            self.constraint_fn, x_flat, self.solver_options['tol']
         )
 
         # project to zero level set
@@ -170,6 +204,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def refresh_aux_vars(self, rng_key, state, precond_state):
         return state._replace(
             p_flat = proj_normal_tangent(
+                self.constraint_fn,
                 state.idiosyncratic,
                 random.normal(rng_key, jnp.shape(state.p_flat))
             )[-1]
@@ -246,7 +281,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # onto the tangent space at the new point
         # note: the displacement is on scale step_size * v, so we must divide
         # by the step size to get the right scale
-        v_flat = proj_normal_tangent(cs, x_flat_new - x_flat)[-1] / step_size
+        v_flat = proj_normal_tangent(
+            self.constraint_fn, cs, x_flat_new - x_flat
+        )[-1] / step_size
 
         # update state and return
         return state._replace(
