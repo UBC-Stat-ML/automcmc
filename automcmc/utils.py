@@ -70,8 +70,33 @@ def n_warmup_to_adapt_rounds(n_warmup):
 # numerical utils
 ###############################################################################
 
-def newton_default_tol(x):
-    return 100*jnp.finfo(x.dtype).eps
+def close_in_norm(
+        x: ArrayLike,
+        y: ArrayLike,
+        rtol: ArrayLike,
+        atol: ArrayLike
+    ) -> jax.Array:
+    """
+    Check closeness of two arrays by comparing the norm of their difference to
+    the maximum of their individual norms
+
+    :param ArrayLike x: first array to compare.
+    :param ArrayLike y: second array to compare.
+    :param ArrayLike rtol: relative tolerance.
+    :param ArrayLike atol: absolute tolerance
+    :return jax.Array: `True` if close.
+    """
+    diff_norm = jnp.linalg.norm(x-y)
+    x_norm = jnp.linalg.norm(x)
+    y_norm = jnp.linalg.norm(y)
+    return diff_norm < jnp.maximum(atol, rtol*jnp.maximum(x_norm, y_norm))
+
+def newton_default_tol(x: ArrayLike) -> jax.Array:
+    # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most packages
+    # we use eps^0.4 for a slightly tighter requirement.
+    # This is then increased as log(n) because we focus on max-error, which
+    # scales logarithmically in the iid case (assuming mgf exists)
+    return jnp.maximum(1.0,jnp.log(x.size))*(jnp.finfo(x.dtype).eps**0.4)
 
 def newton_fn_value_err(val):
     return jnp.abs(val).max()
@@ -81,7 +106,7 @@ def newton(
         x0: ArrayLike,
         tol: Optional[float] = None,
         max_iter: int = 100,
-        mode: str = "gmres"
+        mode: str = "direct"
     ) -> tuple:
     """
     A Newton root solver.
@@ -92,10 +117,13 @@ def newton(
         which case an adequate value is chosen depending on the float type of
         the inputs.
     :param int max_iter: maximum number of Newton steps, defaults to 100
-    :param str mode: one of `("direct", "gmres")`. The default `"gmres"` uses
+    :param str mode: one of `("direct", "gmres")`. The option `"gmres"` uses
         the iterative GMRES solver together with :func:`jax.linearize` to avoid
         forming the full Jacobian. When `mode="direct"`, the full Jacobian is
-        formed and the update direction is obtained via a linear solve.
+        formed and the update direction is obtained via a linear solve. The
+        latter is the default choice, as this solver is intended for use in a
+        setting where :math:`O(d^2)` storage is acceptable, and direct solvers
+        should always be preferred when feasible.
     :return tuple: A tuple of
 
         * `x`: root

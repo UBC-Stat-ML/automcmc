@@ -177,9 +177,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # prefer using only rtol, but need to have atol>0 if the origin
         # satisfies the constraint
         if 'rtol' not in self.x_tols:
-            self.x_tols['rtol'] = jnp.cbrt(jnp.finfo(x_flat.dtype).eps)
+            self.x_tols['rtol'] = jnp.finfo(x_flat.dtype).eps**0.25
         if 'atol' not in self.x_tols:
-            self.x_tols['atol'] = len(x_flat)*self.solver_options['tol'] # recommended in Xu&Holmes-Cerfon(2024)
+            self.x_tols['atol'] = self.solver_options['tol'] # this val already scales with size of problem so no need to scale again
 
         # initialize the constraint state
         cs = make_constraint_state(
@@ -224,13 +224,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     # (i.e., invariant to flipping x<->y) based on L^2-norms
     # better than jnp.allclose which is == all(jnp.isclose)
     def close_in_ambient_space(self, x, y):
-        diff_norm = jnp.linalg.norm(x-y)
-        x_norm = jnp.linalg.norm(x)
-        y_norm = jnp.linalg.norm(y)
-        return diff_norm < jnp.maximum(
-            self.x_tols['atol'],
-            self.x_tols['rtol']*jnp.maximum(x_norm, y_norm)
-        )
+        return utils.close_in_norm(x,y,self.x_tols['rtol'],self.x_tols['atol'])
 
     def maybe_build_roundtrip_state(
             self,

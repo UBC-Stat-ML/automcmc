@@ -30,10 +30,12 @@ class TestUtils(unittest.TestCase):
             # nice initial point
             x0 = jnp.array([0.2, 0.3, 0.5])
             x, n, val, err, d_err, is_satisfied = utils.newton(f, x0, mode=mode)
-            self.assertTrue(is_satisfied)
+            self.assertTrue(is_satisfied, f"{(n, val, err, d_err)}")
             self.assertLess(err, utils.newton_default_tol(x))
             self.assertLess(d_err, 0)
-            self.assertTrue(jnp.allclose(x, x_true, rtol=0.05))
+            self.assertTrue(
+                utils.close_in_norm(x, x_true, rtol=0.05, atol=0.0)
+            )
 
             # unstable initial point => divergence
             x0 = jnp.array([ 0.36057416,  1.2849895 , -0.73873436])

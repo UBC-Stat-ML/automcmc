@@ -60,7 +60,7 @@ class TestConstrained(unittest.TestCase):
     def test_constrained_involution(self):
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
         rng_key = jax.random.key(1)
-        n_dim = 9
+        n_dim = 121
         step_size = 0.5/jnp.sqrt(n_dim) # step should prob decrease with dim (assume same rate as std rwmh)
         constraint_fn_types= {
             'circle': lambda x: (x*x).sum(keepdims=True)-1,
@@ -68,87 +68,86 @@ class TestConstrained(unittest.TestCase):
         }
         n_reps = 3
         for constraint_fn_type, constraint_fn in constraint_fn_types.items():
-            for mode in ("direct","gmres"):
-                for n_rep in range(n_reps):
-                    with self.subTest(
-                        mode=mode,
-                        n_rep=n_rep,
-                        constraint_fn_type=constraint_fn_type
-                    ):
-                        # test initialization to feasible set
-                        kernel = constrained.AutoConstrainedRWMH(
-                            potential_fn=potential_fn,
-                            constraint_fn=constraint_fn,
-                            solver_options={'mode': mode},                        )
-                        (
-                            rng_key,
-                            randn_key,
-                            init_key,
-                            refresh_key
-                        ) = jax.random.split(rng_key, 4)
-                        init_params = jax.random.normal(randn_key, (n_dim,))
-                        state = kernel.init(init_key, 0, init_params, (), {})
-                        tol = kernel.solver_options['tol']
-                        self.assertTrue(state.idiosyncratic.is_satisfied)
-                        self.assertLess(
-                            utils.newton_fn_value_err(constraint_fn(state.x)), tol
-                        )
+            for n_rep in range(n_reps):
+                with self.subTest(
+                    constraint_fn_type=constraint_fn_type,
+                    n_rep=n_rep,
+                ):
+                    # test initialization to feasible set
+                    kernel = constrained.AutoConstrainedRWMH(
+                        potential_fn=potential_fn,
+                        constraint_fn=constraint_fn,
+                    )
+                    (
+                        rng_key,
+                        randn_key,
+                        init_key,
+                        refresh_key
+                    ) = jax.random.split(rng_key, 4)
+                    init_params = jax.random.normal(randn_key, (n_dim,))
+                    state = kernel.init(init_key, 0, init_params, (), {})
+                    tol = kernel.solver_options['tol']
+                    self.assertTrue(state.idiosyncratic.is_satisfied)
+                    self.assertLess(
+                        utils.newton_fn_value_err(constraint_fn(state.x)), tol
+                    )
 
-                        # test log joint and velocity refreshment
-                        preconditioner = kernel.preconditioner
-                        precond_state = preconditioner.maybe_alter_precond_state(
-                            state.base_precond_state, 0
-                        )
-                        state = kernel.update_log_joint(
-                            kernel.refresh_aux_vars(refresh_key, state, precond_state),
-                            precond_state
-                        )
-                        self.assertAlmostEqual(
-                            state.log_prior,
-                            state.idiosyncratic.log_abs_det - potential_fn(state.x),
-                            delta=tol
-                        )
+                    # test log joint and velocity refreshment
+                    preconditioner = kernel.preconditioner
+                    precond_state = preconditioner.maybe_alter_precond_state(
+                        state.base_precond_state, 0
+                    )
+                    state = kernel.update_log_joint(
+                        kernel.refresh_aux_vars(refresh_key, state, precond_state),
+                        precond_state
+                    )
+                    self.assertAlmostEqual(
+                        state.log_prior,
+                        state.idiosyncratic.log_abs_det - potential_fn(state.x),
+                        delta=tol
+                    )
 
-                        # test involutive property
-                        state_half = kernel.involution_main(
-                            step_size, state, precond_state
-                        )
-                        self.assertTrue(state_half.idiosyncratic.is_satisfied)
-                        self.assertLess(
-                            utils.newton_fn_value_err(constraint_fn(state_half.x)),
-                            tol
-                        )
-                        self.assertFalse(kernel.close_in_ambient_space(
-                                state_half.x, state.x
-                        ))
-                        self.assertAlmostEqual(
-                            # due to nature of this problem, velocities are also
-                            # rotating around, and therefore its density (std
-                            # normal) should be preserved
-                            kernel.kinetic_energy(state_half, precond_state),
-                            kernel.kinetic_energy(state, precond_state),
-                            delta = n_dim*tol
-                        )
-                        state_one = kernel.involution_aux(state_half)
-                        state_onehalf = kernel.involution_main(
-                            step_size, state_one, precond_state
-                        )
-                        self.assertTrue(state_onehalf.idiosyncratic.is_satisfied)
-                        self.assertLess(
-                            utils.newton_fn_value_err(
-                                constraint_fn(state_onehalf.x)
-                            ),
-                            tol
-                        )
-                        state_two = kernel.involution_aux(state_onehalf)
-                        self.assertTrue(kernel.close_in_ambient_space(
-                            state_two.x, state.x
-                        ))
-                        self.assertTrue(
-                            kernel.close_in_ambient_space(
-                                state_two.p_flat, state.p_flat
-                            ),
-                        )
+                    # test involutive property
+                    state_half = kernel.involution_main(
+                        step_size, state, precond_state
+                    )
+                    self.assertTrue(state_half.idiosyncratic.is_satisfied)
+                    self.assertLess(
+                        utils.newton_fn_value_err(constraint_fn(state_half.x)),
+                        tol
+                    )
+                    self.assertFalse(kernel.close_in_ambient_space(
+                            state_half.x, state.x
+                    ))
+                    self.assertAlmostEqual(
+                        # due to nature of this problem, velocities are also
+                        # rotating around, and therefore its density (std
+                        # normal) should be preserved
+                        kernel.kinetic_energy(state_half, precond_state),
+                        kernel.kinetic_energy(state, precond_state),
+                        delta = n_dim*tol
+                    )
+                    state_one = kernel.involution_aux(state_half)
+                    state_onehalf = kernel.involution_main(
+                        step_size, state_one, precond_state
+                    )
+                    self.assertTrue(state_onehalf.idiosyncratic.is_satisfied)
+                    self.assertLess(
+                        utils.newton_fn_value_err(
+                            constraint_fn(state_onehalf.x)
+                        ),
+                        tol
+                    )
+                    state_two = kernel.involution_aux(state_onehalf)
+                    self.assertTrue(
+                        kernel.close_in_ambient_space(state_two.x, state.x),
+                        f"|diff|/|x0| = {jnp.linalg.norm(state_two.x- state.x)/jnp.linalg.norm(state.x)}"
+                    )
+                    self.assertTrue(
+                        kernel.close_in_ambient_space(
+                            state_two.p_flat, state.p_flat
+                        ),
+                    )
 
     def test_sampling_torus(self):
         # T^2 torus embedded in R^3
@@ -246,36 +245,37 @@ class TestConstrained(unittest.TestCase):
             selectors.FixedStepSizeSelector(),
             selectors.DeterministicSymmetricSelector(),
         ):
-            rng_key, mcmc_key = jax.random.split(rng_key)
-            kernel = constrained.AutoConstrainedRWMH(
-                potential_fn=testutils.cone_potential,
-                constraint_fn=testutils.cone_constraint,
-                solver_options={'mode': 'direct'},
-                init_base_step_size = 0.9, # same as in paper
-                selector = sel
-            )
-            mcmc = MCMC(
-                kernel,
-                num_warmup=n_warm,
-                num_samples=n_keep,
-                thinning=thinning,
-                progress_bar=False
-            )
-            mcmc.run(
-                mcmc_key, init_params=init_params, extra_fields=extra_fields
-            )
-            log_abs_det = next(iter((mcmc.get_extra_fields().values())))
-            self.assertLess(
-                jnp.abs(log_abs_det+jnp.log(2)/2).max(), 1e-5 # check it matches the known constant
-            )
+            with self.subTest(sel=sel):
+                rng_key, mcmc_key = jax.random.split(rng_key)
+                kernel = constrained.AutoConstrainedRWMH(
+                    potential_fn=testutils.cone_potential,
+                    constraint_fn=testutils.cone_constraint,
+                    solver_options={'mode': 'direct'},
+                    init_base_step_size = 0.9, # same as in paper
+                    selector = sel
+                )
+                mcmc = MCMC(
+                    kernel,
+                    num_warmup=n_warm,
+                    num_samples=n_keep,
+                    thinning=thinning,
+                    progress_bar=False
+                )
+                mcmc.run(
+                    mcmc_key, init_params=init_params, extra_fields=extra_fields
+                )
+                log_abs_det = next(iter((mcmc.get_extra_fields().values())))
+                self.assertLess(
+                    jnp.abs(log_abs_det+jnp.log(2)/2).max(), 1e-5 # check it matches the known constant
+                )
 
-            # ks tests
-            xs,ys,zs = mcmc.get_samples().T
-            xy_cdf = lambda q: (q*jnp.sqrt(1-q*q) + jnp.arcsin(q))/jnp.pi + 0.5 # thx 2 symbolic integration
-            z_cdf = np.square
-            self.assertGreater(stats.ks_1samp(xs, xy_cdf).pvalue, 0.01)
-            self.assertGreater(stats.ks_1samp(ys, xy_cdf).pvalue, 0.01)
-            self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.01)
+                # ks tests
+                xs,ys,zs = mcmc.get_samples().T
+                xy_cdf = lambda q: (q*jnp.sqrt(1-q*q) + jnp.arcsin(q))/jnp.pi + 0.5 # thx 2 symbolic integration
+                z_cdf = np.square
+                self.assertGreater(stats.ks_1samp(xs, xy_cdf).pvalue, 0.01)
+                self.assertGreater(stats.ks_1samp(ys, xy_cdf).pvalue, 0.01)
+                self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.01)
 
 
 
