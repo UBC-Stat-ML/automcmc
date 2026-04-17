@@ -82,8 +82,10 @@ def orthonormal_constraint(x):
     X = x.reshape((d,d))
     G = jnp.inner(X,X)
     triu_inds = jnp.triu_indices(d)
-    G_triu = G[*triu_inds]
-    I_triu = jnp.identity(d)[*triu_inds]
+    # NB: G[*tuple] doesn't work in Python 3.10
+    # https://peps.python.org/pep-0646/#change-1-star-expressions-in-indexes
+    G_triu = G[triu_inds[0],triu_inds[1]]
+    I_triu = jnp.identity(d)[triu_inds[0],triu_inds[1]]
     return G_triu - I_triu
 
 
