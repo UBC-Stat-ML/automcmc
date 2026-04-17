@@ -82,8 +82,8 @@ def orthonormal_constraint(x):
     X = x.reshape((d,d))
     G = jnp.inner(X,X)
     triu_inds = jnp.triu_indices(d)
-    G_triu = G[triu_inds[0],triu_inds[1]]
-    I_triu = jnp.identity(d)[triu_inds[0],triu_inds[1]]
+    G_triu = G[*triu_inds]
+    I_triu = jnp.identity(d)[*triu_inds]
     return G_triu - I_triu
 
 

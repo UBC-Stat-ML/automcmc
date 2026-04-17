@@ -4,7 +4,7 @@ from functools import partial
 import unittest
 
 import numpy as np
-from scipy import stats, integrate
+from scipy import stats
 
 import jax
 from jax import numpy as jnp
@@ -57,7 +57,6 @@ class TestConstrained(unittest.TestCase):
             )
 
 
-    # TODO: update test to new approach
     def test_constrained_involution(self):
         # std normal prior on R^n
         # constrain to unit circle

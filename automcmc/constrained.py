@@ -44,7 +44,7 @@ def make_constraint_state(
     is_satisfied = utils.newton_fn_value_err(f_val) < tol
     m, n = jnp.shape(J)
     assert m < n
-    chol = jax.lax.linalg.cholesky(jnp.inner(J,J), symmetrize_input=False) # (JJ^T)^T=JJ^T -> no need to force it
+    chol = jax.lax.linalg.cholesky(jnp.inner(J,J))
     log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
     return ConstraintState(is_satisfied, x_base, chol, log_abs_det)
 
