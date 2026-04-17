@@ -278,6 +278,47 @@ class TestConstrained(unittest.TestCase):
                 self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.01)
 
 
+    def test_sample_orthonormal(self):
+        # matrices with orthonormal rows
+        # Example 3 in Zappa & Holmes-Cerfon (2018)
+        # TODO: show that JJ^T is indeed constant (empirically true so far)
+        constraint_fn=testutils.orthonormal_constraint
+        potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
+        d = 11
+        n_dim = d*d
+
+        # mcmc sampling
+        rng_key, init_key = jax.random.split(jax.random.key(53))
+        init_params=jax.random.normal(init_key, (n_dim,)) # init in interior of cone
+        n_warm, n_keep = utils.split_n_rounds(16)
+        thinning=2**6 # %ESS ~ 1/64
+        extra_fields = ('idiosyncratic.log_abs_det',)
+        rng_key, mcmc_key = jax.random.split(rng_key)
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=potential_fn,
+            constraint_fn=constraint_fn,
+            solver_options={'mode': 'direct'},
+            init_base_step_size = 0.28, # in paper
+            selector = selectors.FixedStepSizeSelector()
+        )
+        mcmc = MCMC(
+            kernel,
+            num_warmup=n_warm,
+            num_samples=n_keep,
+            thinning=thinning,
+            progress_bar=False
+        )
+        mcmc.run(
+            mcmc_key, init_params=init_params, extra_fields=extra_fields
+        )
+        log_abs_det = next(iter((mcmc.get_extra_fields().values())))
+        self.assertLess(log_abs_det.std(), 0.05)
+
+        # ks test for normality of traces of the matrices
+        traces = jax.vmap(lambda v: jnp.diag(v.reshape((d,d))).sum())(mcmc.get_samples())
+        self.assertGreater(stats.ks_1samp(traces, stats.norm.cdf).pvalue, 0.01)
+
+
 
 if __name__ == '__main__':
     unittest.main()
