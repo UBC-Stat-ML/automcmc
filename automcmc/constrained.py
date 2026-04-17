@@ -177,7 +177,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # prefer using only rtol, but need to have atol>0 if the origin
         # satisfies the constraint
         if 'rtol' not in self.x_tols:
-            self.x_tols['rtol'] = jnp.sqrt(jnp.finfo(x_flat.dtype).eps)
+            self.x_tols['rtol'] = jnp.cbrt(jnp.finfo(x_flat.dtype).eps)
         if 'atol' not in self.x_tols:
             self.x_tols['atol'] = len(x_flat)*self.solver_options['tol'] # recommended in Xu&Holmes-Cerfon(2024)
 
@@ -220,9 +220,16 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         log_lik = jnp.where(cs.is_satisfied, log_lik, -jnp.inf)
         return log_prior, log_lik
 
+    # check closeness of ambient space vectors by using a symmetric check
+    # (i.e., invariant to flipping x<->y) based on L^2-norms
+    # better than jnp.allclose which is == all(jnp.isclose)
     def close_in_ambient_space(self, x, y):
-        return jnp.allclose(
-            x, y, atol=self.x_tols['atol'], rtol=self.x_tols['rtol']
+        diff_norm = jnp.linalg.norm(x-y)
+        x_norm = jnp.linalg.norm(x)
+        y_norm = jnp.linalg.norm(y)
+        return diff_norm < jnp.maximum(
+            self.x_tols['atol'],
+            self.x_tols['rtol']*jnp.maximum(x_norm, y_norm)
         )
 
     def maybe_build_roundtrip_state(
