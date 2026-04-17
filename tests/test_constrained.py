@@ -135,7 +135,9 @@ class TestConstrained(unittest.TestCase):
                         )
                         self.assertTrue(state_onehalf.idiosyncratic.is_satisfied)
                         self.assertLess(
-                            utils.newton_fn_value_err(constraint_fn(state_onehalf.x)),
+                            utils.newton_fn_value_err(
+                                constraint_fn(state_onehalf.x)
+                            ),
                             tol
                         )
                         state_two = kernel.involution_aux(state_onehalf)
@@ -143,10 +145,9 @@ class TestConstrained(unittest.TestCase):
                             state_two.x, state.x
                         ))
                         self.assertTrue(
-                            kernel.close_in_ambient_space(state_two.p_flat, state.p_flat),
-                            f"rel_error={
-                                jnp.linalg.norm(state_two.p_flat-state.p_flat)/jnp.linalg.norm(state.p_flat)
-                            }"
+                            kernel.close_in_ambient_space(
+                                state_two.p_flat, state.p_flat
+                            ),
                         )
 
     def test_sampling_torus(self):
