@@ -1,7 +1,15 @@
+import math
+
 import numpy
+
 import jax.numpy as jnp
+
 import numpyro
 import numpyro.distributions as dist
+
+###############################################################################
+# toy examples
+###############################################################################
 
 def gaussian_potential(x):
     return ((x - 2) ** 2).sum()
@@ -31,8 +39,8 @@ def toy_unid(n_flips, n_heads=None):
 #
 # Ref: Biron-Lattes, Campbell, & Bouchard-Côté (2024)
 def toy_conjugate_normal(
-        d = jnp.int32(3), 
-        m = jnp.float32(2.), 
+        d = jnp.int32(3),
+        m = jnp.float32(2.),
         sigma0 = jnp.float32(2.)
     ):
     def model(sigma0, y):
@@ -61,6 +69,91 @@ def make_eight_schools():
     model_args = (sigma,)
     model_kwargs = {'y': y}
     return model, model_args, model_kwargs
+
+#######################################
+# constrained problems
+#######################################
+
+# orthonormal rows constraint
+def orthonormal_constraint(x):
+    n = len(x)
+    d = math.isqrt(n)
+    assert d*d == n
+    X = x.reshape((d,d))
+    G = jnp.inner(X,X)
+    triu_inds = jnp.triu_indices(d)
+    # NB: G[*tuple] doesn't work in Python 3.10
+    # https://peps.python.org/pep-0646/#change-1-star-expressions-in-indexes
+    G_triu = G[triu_inds[0],triu_inds[1]]
+    I_triu = jnp.identity(d)[triu_inds[0],triu_inds[1]]
+    return G_triu - I_triu
+
+
+####### T^2 torus embedded in R^3 #####
+# Example 1 in Zappa & Holmes-Cerfon (2018)
+#   F(x,y,z)=(R - sqrt{x^2+y^2})^2 + z^2 - r^2
+#   dF/dx = 2x(R - sqrt{x^2+y^2})/sqrt{x^2+y^2} = 2x(R/sqrt{x^2+y^2} - 1)
+#   dF/dy = 2y(R/sqrt{x^2+y^2} - 1) // symmetry
+#   dF/dz = 2z
+# => JJ^T = 4[x^2+y^2](R/sqrt{x^2+y^2} - 1)^2 + 4z^2
+#   = 4(R - sqrt{x^2+y^2})^2 + 4z^2
+#   = 4[F(x,y,z)+r^2]
+# So when F(x,y,z)=0 and also r=1/2, we have
+#   JJ^T = 4/4 = 1 => |JJ^T|^{-1/2} = 1 => log(|JJ^T|^{-1/2}) = 0
+def torus_constraint(R, r, x):
+    return jnp.array([
+        jnp.square(R - jnp.linalg.norm(x[:-1])) + x[-1]*x[-1] - r*r
+    ])
+
+def torus_param(R, r, theta, phi):
+    cos_theta, sin_theta = jnp.cos(theta), jnp.sin(theta)
+    cos_phi, sin_phi = jnp.cos(phi), jnp.sin(phi)
+    u = R + r*cos_phi
+    return jnp.array([u*cos_theta, u*sin_theta, r*sin_phi])
+
+# need arctan2 to return angles in [0,2pi)
+arctan2pi = lambda x,y: jnp.remainder(jnp.arctan2(x,y), 2*jnp.pi)
+def inv_torus_param(R, r, x, y, z):
+    theta = arctan2pi(y, x)
+    d = jnp.hypot(x,y) - R
+    phi = arctan2pi(z, d)
+    return (theta, phi)
+
+###### cone embedded in R^3 #####
+# Example 2 in Zappa & Holmes-Cerfon (2018)
+# inequality constraints passed through pontential fn
+#   F(x,y,z) = z - sqrt(x^2 + y^2)
+#   dF/dx = x(x^2 + y^2)^{-1/2}
+#   dF/dy = y(x^2 + y^2)^{-1/2}
+#   dF/dz =  1
+#    JJ^T = 1 + x^2(x^2 + y^2)^{-1} + y^2(x^2 + y^2)^{-1}
+#      = 1 + (x^2 + y^2)(x^2 + y^2)^{-1}
+#      = 1 + 1
+#      = 2
+#   |JJ^T|^{-1/2} = 2^{-1/2} => log(|JJ^T|^{-1/2}) = -0.5log(2)
+# It follows that the ambient uniform induces the uniform distribution on each
+# level set (i.e., each cone)
+# Note: this wouldn't be the case if we used the alternative function
+#   G(x,y,z) = z^2 - x^2 + y^2
+# even though G^{-1}({0})=F^{-1}({0})! This is because the general equality is
+#
+#   for all r: G^{-1}({r})=F^{-1}({r^2})
+# Nevertheless, the total integral int dr int_cone(r) must end up being the
+# same since the LHS int_{R^3} f(x) dx is invariant to the choice of F,G.
+def cone_constraint(x):
+    return jnp.array([x[-1] - jnp.linalg.norm(x[:-1])])
+    # return jnp.array([x[-1]*x[-1] - jnp.square(x[:-1]).sum()])
+
+def cone_potential(x):
+    return jnp.where(
+        jnp.logical_and(jnp.square(x[:-1]).sum()<=1, x[-1] >= 0),
+        jnp.zeros_like(x, shape=()),
+        jnp.inf,
+    )
+
+###############################################################################
+# diagnostics
+###############################################################################
 
 def extremal_diagnostics(mcmc):
     """

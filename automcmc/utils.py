@@ -1,7 +1,10 @@
+from typing import Callable, Optional
+
 import jax
 from jax import lax
 from jax import numpy as jnp
 from jax.experimental import checkify
+from jax.typing import ArrayLike
 
 ###############################################################################
 # basic utilities
@@ -62,3 +65,119 @@ def current_round(n_samples):
 
 def n_warmup_to_adapt_rounds(n_warmup):
     return ceil_log2(n_warmup + 2) - 1
+
+###############################################################################
+# numerical utils
+###############################################################################
+
+def close_in_norm(
+        x: ArrayLike,
+        y: ArrayLike,
+        rtol: ArrayLike,
+        atol: ArrayLike
+    ) -> jax.Array:
+    """
+    Check closeness of two arrays by comparing the norm of their difference to
+    the maximum of their individual norms
+
+    :param ArrayLike x: first array to compare.
+    :param ArrayLike y: second array to compare.
+    :param ArrayLike rtol: relative tolerance.
+    :param ArrayLike atol: absolute tolerance
+    :return jax.Array: `True` if close.
+    """
+    diff_norm = jnp.linalg.norm(x-y)
+    x_norm = jnp.linalg.norm(x)
+    y_norm = jnp.linalg.norm(y)
+    return diff_norm < jnp.maximum(atol, rtol*jnp.maximum(x_norm, y_norm))
+
+def newton_default_tol(x: ArrayLike) -> jax.Array:
+    # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most packages
+    # we use eps^0.4 for a slightly tighter requirement.
+    # This is then increased as log(n) because we focus on max-error, which
+    # scales logarithmically in the iid case (assuming mgf exists)
+    return jnp.maximum(1.0,jnp.log(x.size))*(jnp.finfo(x.dtype).eps**0.4)
+
+def newton_fn_value_err(val):
+    return jnp.abs(val).max()
+
+def newton(
+        f: Callable[[ArrayLike], jax.Array],
+        x0: ArrayLike,
+        tol: Optional[float] = None,
+        max_iter: int = 100,
+        mode: str = "direct"
+    ) -> tuple:
+    """
+    A Newton root solver.
+
+    :param Callable[[ArrayLike], jax.Array] f: target function
+    :param ArrayLike x0: initial guess
+    :param Optional[float] tol: convergence tolerance, defaults to None, in
+        which case an adequate value is chosen depending on the float type of
+        the inputs.
+    :param int max_iter: maximum number of Newton steps, defaults to 100
+    :param str mode: one of `("direct", "gmres")`. The option `"gmres"` uses
+        the iterative GMRES solver together with :func:`jax.linearize` to avoid
+        forming the full Jacobian. When `mode="direct"`, the full Jacobian is
+        formed and the update direction is obtained via a linear solve. The
+        latter is the default choice, as this solver is intended for use in a
+        setting where :math:`O(d^2)` storage is acceptable, and direct solvers
+        should always be preferred when feasible.
+    :return tuple: A tuple of
+
+        * `x`: root
+        * `n`: number of iterations
+        * `val`: function value at the root
+        * `err`: maximum absolute value of `val`
+        * `d_err`: change in `err` in the last iteration
+        * `flag`: true if `err<tol` (i.e., success)
+    """
+    dim = len(x0)
+    val0 = f(x0)
+    assert len(val0) == dim
+    err0 = newton_fn_value_err(val0)
+    if tol is None:
+        tol = newton_default_tol(err0)
+
+    def cond_fn(carry):
+        x, n, val, err, d_err = carry
+        return jnp.logical_and(
+            n < max_iter,                        # still have budget to go
+            jnp.logical_and(
+                err >= tol,                      # error still high
+                jnp.logical_or(n<3, d_err < tol) # after 3rd round, error is not increasing significantly
+            )
+        )
+
+    def body_fn(carry):
+        x, n, val0, err0, _ = carry
+        n += 1
+
+        # solve for Newton's update
+        #   J_f(x) dx = -f(x) ==> x' = x + dx
+        if mode == "direct":
+            # form full Jacobian and use a direct solver
+            # use fwd mode since the system is square
+            dx = jnp.linalg.solve(jax.jacfwd(f)(x), -val0)
+        elif mode == "gmres":
+            # use GMRES with Jacobian-vector products (i.e. fwd mode autodiff)
+            # Note: we use this solver in a setting where dim^2 storage is ok,
+            # and the absolute worst case time complexity O(dim^3) is tolerable
+            # every now and then. Therefore, we avoid restarting
+            jvp = jax.linearize(f, x)[1] # faster than e.g. lambda v: jax.jvp(f, (x,), (v,))[1]
+            dx = jax.scipy.sparse.linalg.gmres(
+                jvp, -val0, tol=tol, restart=dim
+            )[0]
+        else:
+            raise ValueError(f"Unknown mode `{mode}`")
+
+        # return updated carry
+        x += dx
+        val = f(x)
+        err = newton_fn_value_err(val)
+        return (x, n, val, err, err-err0)
+
+    # run loop and return full carry for diagnostics plus flag
+    carry = jax.lax.while_loop(cond_fn, body_fn, (x0, 0, val0, err0, err0))
+    return (*carry, carry[3]<tol)

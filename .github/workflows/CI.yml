@@ -8,7 +8,7 @@ on:
   pull_request:
 
 jobs:
-  
+
   test:
     strategy:
       fail-fast: true
@@ -28,7 +28,7 @@ jobs:
           pip install coverage .
       - name: Run tests
         run: |
-          python -m coverage run -m unittest
+          python -m coverage run -m unittest -v -f
           python -m coverage xml
       - name: Upload coverage
         uses: codecov/codecov-action@v6

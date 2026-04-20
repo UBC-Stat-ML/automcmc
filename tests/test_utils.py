@@ -14,6 +14,43 @@ class TestUtils(unittest.TestCase):
             self.assertEqual(n_samples, 2**(n_rounds+1)-2)
             self.assertEqual(n_rounds, utils.current_round(n_samples))
 
+    def test_newton(self):
+        # example from
+        # https://github.com/jax-ml/jax/discussions/17975#discussion-5707669
+        def f(x):
+            x, y, z = x
+            f1 = x**2 + y**2 + z**2 - 3
+            f2 = x**2 + y**2 - z    - 1
+            f3 = x    + y    + z    - 3
+            return jnp.array([f1, f2, f3])
+
+        x_true = jnp.ones(3)
+
+        for mode in ("direct", "gmres"):
+            # nice initial point
+            x0 = jnp.array([0.2, 0.3, 0.5])
+            x, n, val, err, d_err, is_satisfied = utils.newton(f, x0, mode=mode)
+            self.assertTrue(is_satisfied, f"{(n, val, err, d_err)}")
+            self.assertLess(err, utils.newton_default_tol(x))
+            self.assertLess(d_err, 0)
+            self.assertTrue(
+                utils.close_in_norm(x, x_true, rtol=0.05, atol=0.0)
+            )
+
+            # unstable initial point => divergence
+            x0 = jnp.array([ 0.36057416,  1.2849895 , -0.73873436])
+            x, n, val, err, d_err, is_satisfied = utils.newton(f, x0, mode=mode)
+            self.assertFalse(is_satisfied)
+            self.assertEqual(n, 4) # divergence caught
+            self.assertGreater(d_err, 0)
+
+            # initial point with rank-deficient Jacobian => inf/nans at n=1
+            x0 = jnp.zeros_like(x_true)
+            x, n, val, err, d_err, is_satisfied = utils.newton(f, x0, mode=mode)
+            self.assertFalse(is_satisfied)
+            self.assertEqual(n, 1) # nans caught
+            self.assertTrue(jnp.isnan(d_err)) # nans caught
+
 
 if __name__ == '__main__':
     unittest.main()
