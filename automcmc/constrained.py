@@ -17,9 +17,10 @@ class ConstraintState(NamedTuple):
         x_base: point that dictates the level set :math:`f^{-1}(\\{x\\})` and
             the tangent and normal spaces that determine the projections onto
             said level set. We assume `x_base` is flattened.
-        chol: Cholesky decomposition of :math:`J_xJ_x^T` where :math:`J_x`
-            is the Jacobian of the constraint evaluated at `x_base`.
-        log_abs_det: log of :math:`|(J_xJ_x^T)|^{-1/2}` computed using the
+        chol: a lower triangular matrix arising from the Cholesky decomposition
+            of :math:`J_xJ_x^T`, where :math:`J_x` is the Jacobian of the
+            constraint evaluated at `x_base`.
+        log_abs_det: log of :math:`|J_xJ_x^T|^{-1/2}` computed using the
             Cholesky decomposition.
     """
     is_satisfied: ArrayLike
@@ -33,7 +34,7 @@ def make_constraint_state(
         tol: ArrayLike
     ) -> ConstraintState:
     """
-    Build :class:`ConstraintState`.
+    Build :class:`ConstraintState` from a constraint function.
 
     :param constraint_fn: the constraint function.
     :param x_base: base point; see :class:`ConstraintState`.
@@ -47,6 +48,25 @@ def make_constraint_state(
     chol = jax.lax.linalg.cholesky(jnp.inner(J,J))
     log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
     return ConstraintState(is_satisfied, x_base, chol, log_abs_det)
+
+def make_constraint_state_for_fwd_model(
+        fwd_model: Callable[[ArrayLike], jax.Array],
+        obs_output: ArrayLike,
+        *args
+    ) -> ConstraintState:
+    """
+    Build :class:`ConstraintState` from a forward model and an observed output,
+    such that the constraint function is `f(x)=fwd_model(x)-obs_output`.
+
+    :param fwd_model: the forward model.
+    :param obs_output: an observed output of the forward model.
+    :param args: passed to :func:`make_constraint_state`.
+    :return: a :class:`ConstraintState`.
+    """
+    return make_constraint_state(
+        lambda x: fwd_model(x) - obs_output,
+        *args
+    )
 
 # project onto normal (N) space
 #   P[N]v = J^T(JJ^T)^{-1}Jv
@@ -119,6 +139,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             *args,
             preconditioner=preconditioning.IdentityDiagonalPreconditioner(), # we need rotational symmetry
             constraint_fn=None, # aim is to target `constraint_fn=0`. Input var is x_flat.
+            fwd_model=None,
+            init_obs_output=None,
             solver_options = {},
             x_tols = {},
             **kwargs
@@ -128,7 +150,20 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             self.preconditioner, preconditioning.IdentityDiagonalPreconditioner
         ), "This method is justified only for `IdentityDiagonalPreconditioner`" \
           f" but I got instead {type(self.preconditioner)}"
-        self.constraint_fn = constraint_fn
+
+        if fwd_model is None:
+            assert init_obs_output is None or jnp.allclose(
+                init_obs_output, jnp.zeros_like(init_obs_output)
+            ), "You supplied a non-zero `init_obs_output` but no `fwd_model`"
+            if constraint_fn is not None:
+                fwd_model = constraint_fn
+            else:
+                raise ValueError(
+                    "You must supply one of `fwd_model` or `constraint_fn`"
+                )
+
+        self.fwd_model = fwd_model
+        self.init_obs_output = 0 if init_obs_output is None else init_obs_output
         self.solver_options = solver_options
         self.x_tols = x_tols
 
@@ -150,7 +185,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # project to the feasible set in the normal directions at cs.x_base
         #   solve for z: 0 = f(x + J^Tz) => set x' = x + J^Tz
         # since J^Tz = (z^TJ)^T, we can use vector-Jacobian prods (vjp)
-        f_val, f_vjp = jax.vjp(self.constraint_fn, cs.x_base)
+        f_val, f_vjp = jax.vjp(self.fwd_model, cs.x_base)
         z, *diagnostics, _ = utils.newton(
             lambda z: self.constraint_fn(x_flat + f_vjp(z)[0]),
             jnp.zeros_like(f_val),
