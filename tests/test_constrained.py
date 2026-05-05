@@ -87,7 +87,7 @@ class TestConstrained(unittest.TestCase):
                     init_params = jax.random.normal(randn_key, (n_dim,))
                     state = kernel.init(init_key, 0, init_params, (), {})
                     tol = kernel.solver_options['tol']
-                    self.assertTrue(state.idiosyncratic.is_satisfied)
+                    self.assertTrue(state.idiosyncratic.cs.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(constraint_fn(state.x)), tol
                     )
@@ -103,7 +103,7 @@ class TestConstrained(unittest.TestCase):
                     )
                     self.assertAlmostEqual(
                         state.log_prior,
-                        state.idiosyncratic.log_abs_det - potential_fn(state.x),
+                        state.idiosyncratic.cs.log_abs_det - potential_fn(state.x),
                         delta=tol
                     )
 
@@ -111,7 +111,7 @@ class TestConstrained(unittest.TestCase):
                     state_half = kernel.involution_main(
                         step_size, state, precond_state
                     )
-                    self.assertTrue(state_half.idiosyncratic.is_satisfied)
+                    self.assertTrue(state_half.idiosyncratic.cs.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(constraint_fn(state_half.x)),
                         tol
@@ -131,7 +131,7 @@ class TestConstrained(unittest.TestCase):
                     state_onehalf = kernel.involution_main(
                         step_size, state_one, precond_state
                     )
-                    self.assertTrue(state_onehalf.idiosyncratic.is_satisfied)
+                    self.assertTrue(state_onehalf.idiosyncratic.cs.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(
                             constraint_fn(state_onehalf.x)
@@ -192,7 +192,7 @@ class TestConstrained(unittest.TestCase):
         n_warm, n_keep = utils.split_n_rounds(15)
         thinning=32 # %ESS ~ 1/32
         init_params = jnp.ones(3) # init outside level set on purpose
-        extra_fields = ('idiosyncratic.log_abs_det',)
+        extra_fields = ('idiosyncratic.cs.log_abs_det',)
         for sel in (
             selectors.FixedStepSizeSelector(),
             selectors.DeterministicSymmetricSelector(),
@@ -240,7 +240,7 @@ class TestConstrained(unittest.TestCase):
         init_params=jnp.full((3,), 0.5) # init in interior of cone
         n_warm, n_keep = utils.split_n_rounds(14)
         thinning=16 # %ESS ~ 1/16
-        extra_fields = ('idiosyncratic.log_abs_det',)
+        extra_fields = ('idiosyncratic.cs.log_abs_det',)
         for sel in (
             selectors.FixedStepSizeSelector(),
             selectors.DeterministicSymmetricSelector(),
@@ -292,7 +292,7 @@ class TestConstrained(unittest.TestCase):
         init_params=jax.random.normal(init_key, (n_dim,)) # init in interior of cone
         n_warm, n_keep = utils.split_n_rounds(16)
         thinning=2**6 # %ESS ~ 1/64
-        extra_fields = ('idiosyncratic.log_abs_det',)
+        extra_fields = ('idiosyncratic.cs.log_abs_det',)
         rng_key, mcmc_key = jax.random.split(rng_key)
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn=potential_fn,
