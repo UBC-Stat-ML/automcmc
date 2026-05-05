@@ -88,7 +88,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         self._potential_fn = potential_fn
         self.logprior_and_loglik = logprior_and_loglik
         self._postprocess_fn = None
-        self._sample_fn = self.sample_single_chain
+        self._step_fn = self.sample_single_chain
         self.init_base_step_size = init_base_step_size
         self.selector = selector
         self.preconditioner = preconditioner
@@ -122,14 +122,21 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
             None
         )
 
-    def init_extras(self, state):
+    def init_extras(self, state: AutoMCMCState) -> AutoMCMCState:
         """
-        Carry out additional initializations not required by all
-        :class:`AutoMCMC` kernels.
+        Subclasses can overload this method to carry out additional
+        initializations. Note that the implementation must explicitly handle
+        the possibility of running in vectorized mode.
         """
         return state
 
-    # note: this is called by the enclosing numpyro.infer.MCMC object
+    # Note: this is called by the enclosing numpyro.infer.MCMC object, from the
+    # `_single_chain_mcmc` method. When running vectorized, the only thing that
+    # NumPyro does for us is make `rng_key` an array of PRNG keys. It is up to
+    # us to 1) detect this and 2) handle the required vectorization (i.e., do
+    # the vmapping). The same goes for the `sample` method (i.e., the stepping
+    # function), which is why here we take care of switching to a vmapped
+    # version if vectorization is detected
     def init(self, rng_key, num_warmup, initial_params, model_args, model_kwargs):
         # determine number of adaptation rounds
         self.adapt_rounds = utils.n_warmup_to_adapt_rounds(num_warmup)
@@ -202,7 +209,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
 
         # adjust the sampling function in case of vectorization
         if is_vectorized:
-            self._sample_fn = jax.vmap(self._sample_fn, in_axes=(0,None,None))
+            self._step_fn = jax.vmap(self._step_fn, in_axes=(0,None,None))
 
         return initial_state
 
@@ -230,7 +237,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
         pass
 
     def sample(self, state, model_args, model_kwargs):
-        return self._sample_fn(state, model_args, model_kwargs)
+        return self._step_fn(state, model_args, model_kwargs)
 
     def get_diagnostics_str(self, state):
         return "avg_ss={:.1e}, rr={:.2f}, ap={:.2f}, lj={: .1e}".format(

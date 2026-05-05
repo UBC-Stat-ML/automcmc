@@ -12,17 +12,17 @@ from automcmc import tempering
 class AutoHMC(autostep.AutoStep):
 
     def __init__(
-            self, 
-            *args, 
-            n_leapfrog_steps=32, 
-            forward_mode_ad=False, 
+            self,
+            *args,
+            n_leapfrog_steps=32,
+            forward_mode_ad=False,
             **kwargs
         ):
         super().__init__(*args, **kwargs)
         self.n_leapfrog_steps = n_leapfrog_steps
         self.forward_mode_ad = forward_mode_ad
         self.integrator = None
-            
+
     def init_extras(self, initial_state):
         if jnp.shape(initial_state.rng_key) == ():
             proto_x = initial_state.x
@@ -32,7 +32,7 @@ class AutoHMC(autostep.AutoStep):
             self.logprior_and_loglik, proto_x, self.forward_mode_ad
         )
         return initial_state
-    
+
     def kinetic_energy(self, state, precond_state):
         # compute kinetic energy
         # autoHMC works in "momentum" convention -- i.e., p_flat ~ N(0,M) -- as
@@ -42,18 +42,18 @@ class AutoHMC(autostep.AutoStep):
         Minv = precond_state.var
         Minv_p_flat = Minv @ p_flat if jnp.ndim(Minv) == 2 else Minv * p_flat
         return 0.5*jnp.dot(Minv_p_flat, p_flat)
-    
+
     def refresh_aux_vars(self, rng_key, state, precond_state):
         v_flat = random.normal(rng_key, jnp.shape(state.p_flat))
         U = precond_state.inv_var_triu_factor
         p_flat = U @ v_flat if jnp.ndim(U) == 2 else U * v_flat
         return state._replace(p_flat = p_flat)
-    
+
     def involution_main(self, step_size, state, precond_state):
         return self.integrator(
             step_size, state, precond_state, self.n_leapfrog_steps
         )
-    
+
     def involution_aux(self, state):
         return state._replace(p_flat = -state.p_flat)
 
@@ -74,11 +74,11 @@ class AutoHMC(autostep.AutoStep):
 #       1) Sampling p = Ly
 #       2) kinetic energy eval: [L^{-1}p]^T [L^{-1}p]
 #       3) For each leapfrog, a single matop (M^{-1}p)
-# The alternative is to work with y:=L^{-1}p, which gives the updates 
+# The alternative is to work with y:=L^{-1}p, which gives the updates
 # 	y* = y  - (eps/2)L^{-1}grad(U)(x)
 # 	x' = x  + eps (L^T)^{-1}y
 # 	y' = y* - (eps/2)L^{-1}grad(U)(x')
-# This means we need 
+# This means we need
 #   - To get L^{-1} and (L^{-1})^T
 #   - No matrix ops outside leapfrog
 #   - ...but 3 O(d^2) ops for every LF step!
@@ -112,10 +112,10 @@ def gen_integrator(logprior_and_loglik, proto_x, forward_mode_ad):
 
     def grad_flat_x_flat(x_flat, inv_temp):
         """
-        Flattened gradient of the potential evaluated at a flattened 
+        Flattened gradient of the potential evaluated at a flattened
         unconstrained state.
         """
-        # unflatten state and take gradient 
+        # unflatten state and take gradient
         # note: by default, `grad` and `jacfwd` take diff w.r.t. the first arg only
         x = unravel_fn(x_flat)
         if forward_mode_ad:
@@ -133,7 +133,7 @@ def gen_integrator(logprior_and_loglik, proto_x, forward_mode_ad):
         grad_flat = grad_flat_x_flat(x_flat, inv_temp)
         p_flat    = velocity_step(p_flat, step_size, grad_flat)
         return (x_flat, p_flat, step_size, precond_state, inv_temp), None
-    
+
     def integrator(step_size, state, precond_state, n_steps):
         # jax.debug.print("start: step_size={s}, precond_state={d}", ordered=True, s=step_size, d=precond_state)
         # explicitly unpack state: avoid using tuple unpacking as it breaks
@@ -164,13 +164,13 @@ def gen_integrator(logprior_and_loglik, proto_x, forward_mode_ad):
         x_flat    = position_step(x_flat, step_size, precond_state, p_flat)
         grad_flat = grad_flat_x_flat(x_flat, inv_temp)
         p_flat    = velocity_step(p_flat, 0.5*step_size, grad_flat)
-        
+
         # unravel, update state, and return it
         x_new = unravel_fn(x_flat)
         # jax.debug.print("final: x_new={x}, x_flat={xf}, grad={g}, p_flat={v}", ordered=True, x=x_new, xf=x_flat, g=grad_flat, v=p_flat)
 
         return state._replace(x = x_new, p_flat = p_flat)
-    
+
     return integrator
 
 
