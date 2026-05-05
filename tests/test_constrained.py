@@ -15,11 +15,25 @@ from numpyro.infer import MCMC
 class TestConstrained(unittest.TestCase):
 
     def test_invalid_inputs(self):
-        with self.assertRaises(AssertionError):
+        pot = lambda x: 0.0
+        with self.assertRaisesRegex(ValueError, "You must supply one"):
+            constrained.AutoConstrainedRWMH(potential_fn=pot)
+
+        with self.assertRaisesRegex(AssertionError,"This method is justified"):
             constrained.AutoConstrainedRWMH(
-                potential_fn=lambda x: 0.0,
+                potential_fn=pot,
                 preconditioner=preconditioning.FixedDensePreconditioner(),
             )
+
+        # check unfeasible problem is caught
+        init_params = jnp.zeros(5)
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=pot,
+            fwd_model=lambda x: jnp.ones_like(x, shape=(2,)),
+            init_obs_output=jnp.array([-3,3]), # not in range of fwd mod
+        )
+        with self.assertRaisesRegex(AssertionError, "Cannot find feasible"):
+            kernel.init(jax.random.key(1), 0, init_params, (), {})
 
     def test_proj_normal_tangent(self):
         d = 3
