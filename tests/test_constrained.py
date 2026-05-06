@@ -332,12 +332,13 @@ class TestConstrained(unittest.TestCase):
         traces = jax.vmap(lambda v: jnp.diag(v.reshape((d,d))).sum())(mcmc.get_samples())
         self.assertGreater(stats.ks_1samp(traces, stats.norm.cdf).pvalue, 0.01)
 
-    def test_vectorized_sampling(self):
+    def test_constrained_vectorized(self):
         # params
         n_chains = 64
         n_dim = 2
         rng_key = jax.random.key(9)
         n_warm, n_keep = utils.split_n_rounds(10)
+        thinning=16
 
         # define an equally spaced grid in [0,1]
         # check the Riemann integral recovers the truth (2/3) for expected radius
@@ -350,9 +351,8 @@ class TestConstrained(unittest.TestCase):
         # define sampler
         potential_fn=lambda x: jnp.zeros((), x.dtype)
         fwd_model=lambda x: jnp.array([jnp.linalg.norm(x)])
-        rng_key, params_key = jax.random.split(rng_key)
+        mcmc_key, params_key = jax.random.split(rng_key)
         init_params = jax.random.normal(params_key,(n_chains, n_dim))
-        mcmc_keys = jax.random.split(rng_key, n_chains)
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn=potential_fn,
             fwd_model=fwd_model,
@@ -364,12 +364,12 @@ class TestConstrained(unittest.TestCase):
             kernel,
             num_warmup=n_warm,
             num_samples=n_keep,
-            thinning=16,
+            thinning=thinning,
             num_chains=n_chains,
             chain_method="vectorized",
             progress_bar=False
         )
-        mcmc.run(mcmc_keys,init_params=init_params)
+        mcmc.run(mcmc_key,init_params=init_params)
         samples = mcmc.get_samples(True)
 
         # make sure we didn't request too small radii
