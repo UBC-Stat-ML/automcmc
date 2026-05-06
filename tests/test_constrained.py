@@ -332,6 +332,66 @@ class TestConstrained(unittest.TestCase):
         traces = jax.vmap(lambda v: jnp.diag(v.reshape((d,d))).sum())(mcmc.get_samples())
         self.assertGreater(stats.ks_1samp(traces, stats.norm.cdf).pvalue, 0.01)
 
+    def test_vectorized_sampling(self):
+        # params
+        n_chains = 128
+        n_dim = 2
+        rng_key = jax.random.key(9)
+        n_warm, n_keep = utils.split_n_rounds(10)
+
+        # define an equally spaced grid in [0,1]
+        # check the Riemann integral recovers the truth (2/3) for expected radius
+        init_obs_output = jnp.arange(1, n_chains+1).reshape((n_chains,1))/n_chains
+        dr = init_obs_output[1,0]-init_obs_output[0,0]
+        assert jnp.isclose(
+            2*dr*jnp.square(init_obs_output).sum(), 2/3, rtol=0.02
+        )
+
+        # define sampler
+        potential_fn=lambda x: jnp.zeros((), x.dtype)
+        fwd_model=lambda x: jnp.array([jnp.linalg.norm(x)])
+        rng_key, params_key = jax.random.split(rng_key)
+        init_params = jax.random.normal(params_key,(n_chains, n_dim))
+        mcmc_keys = jax.random.split(rng_key, n_chains)
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=potential_fn,
+            fwd_model=fwd_model,
+            init_obs_output=init_obs_output
+        )
+
+        # run mcmc and get samples
+        mcmc = MCMC(
+            kernel,
+            num_warmup=n_warm,
+            num_samples=n_keep,
+            thinning=16,
+            num_chains=n_chains,
+            chain_method="vectorized",
+            progress_bar=False
+        )
+        mcmc.run(mcmc_keys,init_params=init_params)
+        samples = mcmc.get_samples(True)
+
+        # make sure we didn't request too small radii
+        assert init_obs_output[0] > kernel.solver_options['tol']
+
+        # check that the fwd model is respected along chains at every sample step
+        fwd_vals = jax.vmap(jax.vmap(fwd_model))(samples)
+        assert jnp.all(
+            jax.vmap(
+                partial(jnp.allclose, rtol=0, atol=kernel.solver_options['tol']),
+                in_axes=(1,None),
+            )(fwd_vals, init_obs_output)
+        )
+
+        # but also check that the submanifolds are explored by ensuring the
+        # angles follow a Unif(-pi,pi) distribution
+        # use a simple histogram check instead of KS test (too sensitive at
+        # this number of samples, which are not really indep anyway)
+        # impose grid to avoid being fooled by constant data
+        angles = jnp.arctan2(samples[:,:,0],samples[:,:,1]).flatten()
+        hist = jnp.histogram(angles,bins=jnp.linspace(-jnp.pi, jnp.pi, 11))
+        assert jnp.allclose(hist[0], samples.size/(10*n_dim), rtol=0.1)
 
 
 if __name__ == '__main__':
