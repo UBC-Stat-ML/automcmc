@@ -217,12 +217,14 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         )
         return (x_flat, fms, diagnostics)
 
-    def init_extras(self, state):
-        # TODO: extract `fwd_model` for numpyro models (via a deterministic
-        # stmtnt+model_kwargs or a Delta dist (problem: breaks log_prob))
-
+    def init_fms_and_project(self, x, init_obs_output):
         # set the constraint tolerance
-        x_flat, unravel_fn = flatten_util.ravel_pytree(state.x)
+        # Note: even though this function may run inside vmap, tolerances are
+        # always singletons. Moreover, they don't depend on the value of `x`,
+        # just their shape. Furthermore, vmap is smart and reinterprets `.shape`
+        # (and `.size`, etc) so as to return the un-vmapped value. Hence, tols
+        # are the same scalars regardless of vectorization
+        x_flat, unravel_fn = flatten_util.ravel_pytree(x)
         if 'tol' not in self.solver_options:
             self.solver_options['tol'] = utils.newton_default_tol(x_flat)
 
@@ -237,20 +239,39 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # initialize the forward model state
         fms = make_fwd_model_state(
             self.fwd_model,
-            self.init_obs_output,
+            init_obs_output,
             x_flat,
             self.solver_options['tol']
         )
 
         # project to zero level set
         x_flat, fms, diagnostics = self.proj_level_set(x_flat, fms)
-        assert fms.cs.is_satisfied, "Cannot find feasible starting point. " \
-                                   f"Solver output:\n{diagnostics}"
+        return unravel_fn(x_flat), fms, diagnostics
+
+
+    # TODO: extract `fwd_model` for numpyro models (via a deterministic
+    # stmtnt+model_kwargs or a Delta dist (problem: breaks log_prob))
+    def init_extras(self, state):
+        rng_key_shape = jnp.shape(state.rng_key)
+        if rng_key_shape == ():
+            x, fms, diagnostics = self.init_fms_and_project(
+                state.x, self.init_obs_output
+            )
+        else:
+            assert (
+                jnp.ndim(self.init_obs_output) > 0 and
+                rng_key_shape[0] == self.init_obs_output.shape[0]
+            ), "`init_obs_output` must have a leading dimension equal to " \
+               f"the number of chains requested ({rng_key_shape[0]})"
+            x, fms, diagnostics = jax.vmap(self.init_fms_and_project)(
+                state.x, self.init_obs_output
+            )
+
+        assert jnp.all(fms.cs.is_satisfied), \
+            f"Cannot find feasible starting point. Solver output:\n{diagnostics}"
 
         # return updated state
-        return state._replace(
-            x = unravel_fn(x_flat), idiosyncratic = fms
-        )
+        return state._replace(x = x, idiosyncratic = fms)
 
     def kinetic_energy(self, state, precond_state):
         return 0.5*jnp.dot(state.p_flat, state.p_flat)

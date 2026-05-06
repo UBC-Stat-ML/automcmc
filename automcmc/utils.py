@@ -95,7 +95,7 @@ def newton_default_tol(x: ArrayLike) -> jax.Array:
     # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most packages
     # we use eps^0.4 for a slightly tighter requirement.
     # This is then increased as log(n) because we focus on max-error, which
-    # scales logarithmically in the iid case (assuming mgf exists)
+    # scales logarithmically in the iid case (assuming subexponential tails)
     return jnp.maximum(1.0,jnp.log(x.size))*(jnp.finfo(x.dtype).eps**0.4)
 
 def newton_fn_value_err(val):
