@@ -1,4 +1,4 @@
-from typing import NamedTuple, Callable
+from typing import NamedTuple, Callable, Any
 
 import jax
 from jax.typing import ArrayLike
@@ -9,17 +9,17 @@ from automcmc.automcmc import AutoMCMCState
 
 class ConstraintState(NamedTuple):
     """
-    A :class:`NamedTuple` type for storing constraint-related quantities
-    evaluated at a specific point in space.
+    A :class:`NamedTuple` describing the zero-level set of a constraint.
 
     Attributes:
         is_satisfied: true if `f(x_base)=0` up to tolerance.
-        x_base: point that dictates the level set :math:`f^{-1}(\\{x\\})` and
-            the tangent and normal spaces that determine the projections onto
-            said level set. We assume `x_base` is flattened.
-        chol: Cholesky decomposition of :math:`J_xJ_x^T` where :math:`J_x`
-            is the Jacobian of the constraint evaluated at `x_base`.
-        log_abs_det: log of :math:`|(J_xJ_x^T)|^{-1/2}` computed using the
+        x_base: point that dictates the level set :math:`f^{-1}(\\{f(x)\\})`
+            and the tangent and normal spaces that determine the projections
+            onto said level set. We assume `x_base` is flattened.
+        chol: a lower triangular matrix arising from the Cholesky decomposition
+            of :math:`J_xJ_x^T`, where :math:`J_x` is the Jacobian of the
+            constraint evaluated at `x_base`.
+        log_abs_det: log of :math:`|J_xJ_x^T|^{-1/2}` computed using the
             Cholesky decomposition.
     """
     is_satisfied: ArrayLike
@@ -33,7 +33,7 @@ def make_constraint_state(
         tol: ArrayLike
     ) -> ConstraintState:
     """
-    Build :class:`ConstraintState`.
+    Build a :class:`ConstraintState`.
 
     :param constraint_fn: the constraint function.
     :param x_base: base point; see :class:`ConstraintState`.
@@ -47,6 +47,41 @@ def make_constraint_state(
     chol = jax.lax.linalg.cholesky(jnp.inner(J,J))
     log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
     return ConstraintState(is_satisfied, x_base, chol, log_abs_det)
+
+
+class ForwardModelState(NamedTuple):
+    """
+    A :class:`NamedTuple` describing a specific level set of a forward model.
+
+    Attributes:
+        cs: an instance of :class:`ConstraintState`.
+        obs_output: output of the forward model at `cs.x_base`.
+    """
+    cs: ConstraintState
+    obs_output: ArrayLike
+
+
+def make_fwd_model_state(
+        fwd_model: Callable[[ArrayLike], jax.Array],
+        obs_output: ArrayLike,
+        *args
+    ) -> ForwardModelState:
+    """
+    Build :class:`ForwardModelState` from a forward model function and an
+    observed output.
+
+    :param fwd_model: the forward model.
+    :param obs_output: an observed output of the forward model.
+    :param args: passed to :func:`make_constraint_state`.
+    :return: a :class:`ForwardModelState`.
+    """
+    return ForwardModelState(
+        make_constraint_state(
+            lambda x: fwd_model(x) - obs_output,
+            *args
+        ),
+        obs_output
+    )
 
 # project onto normal (N) space
 #   P[N]v = J^T(JJ^T)^{-1}Jv
@@ -119,6 +154,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             *args,
             preconditioner=preconditioning.IdentityDiagonalPreconditioner(), # we need rotational symmetry
             constraint_fn=None, # aim is to target `constraint_fn=0`. Input var is x_flat.
+            fwd_model=None,
+            init_obs_output=None,
             solver_options = {},
             x_tols = {},
             **kwargs
@@ -128,48 +165,66 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             self.preconditioner, preconditioning.IdentityDiagonalPreconditioner
         ), "This method is justified only for `IdentityDiagonalPreconditioner`" \
           f" but I got instead {type(self.preconditioner)}"
-        self.constraint_fn = constraint_fn
+
+        if fwd_model is None:
+            assert init_obs_output is None or jnp.allclose(
+                init_obs_output, jnp.zeros_like(init_obs_output)
+            ), "You supplied a non-zero `init_obs_output` but no `fwd_model`"
+            if constraint_fn is not None:
+                fwd_model = constraint_fn
+            else:
+                raise ValueError(
+                    "You must supply one of `fwd_model` or `constraint_fn`"
+                )
+
+        self.fwd_model = fwd_model
+        self.init_obs_output = 0 if init_obs_output is None else init_obs_output
         self.solver_options = solver_options
         self.x_tols = x_tols
 
     def proj_level_set(
             self,
             x_flat: ArrayLike,
-            cs: ConstraintState
-        ) -> tuple:
+            fms: ForwardModelState
+        ) -> tuple[Any, ...]:
         """
-        Project a point on the constraint level set along the normal space
-        determined by a :class:`ConstraintState`.
+        Project a point on the level set determined by a
+        :class:`ForwardModelState`.
 
         :param ArrayLike x_flat: a vector.
-        :param ConstraintState cs: a :class:`ConstraintState` corresponding to
-            the base point which dictates the normal spaces.
-        :return tuple: projected vector, updated :class:`ConstraintState`, and
-            solver diagnostics.
+        :param ForwardModelState fms: determines the level set that is being
+            targeted.
+        :return tuple[Any, ...]: projected vector, updated
+            :class:`ForwardModelState`, and solver diagnostics.
         """
         # project to the feasible set in the normal directions at cs.x_base
         #   solve for z: 0 = f(x + J^Tz) => set x' = x + J^Tz
         # since J^Tz = (z^TJ)^T, we can use vector-Jacobian prods (vjp)
-        f_val, f_vjp = jax.vjp(self.constraint_fn, cs.x_base)
+        f_val, f_vjp = jax.vjp(self.fwd_model, fms.cs.x_base) # Jac[fwd-mod] == Jac[constr]
         z, *diagnostics, _ = utils.newton(
-            lambda z: self.constraint_fn(x_flat + f_vjp(z)[0]),
+            lambda z: self.fwd_model(x_flat + f_vjp(z)[0]) - fms.obs_output,
             jnp.zeros_like(f_val),
             **self.solver_options
         )
         x_flat += f_vjp(z)[0]
 
         # update the constraint state and return
-        cs = make_constraint_state(
-            self.constraint_fn, x_flat, self.solver_options['tol']
+        fms = make_fwd_model_state(
+            self.fwd_model,
+            fms.obs_output,
+            x_flat,
+            self.solver_options['tol']
         )
-        return (x_flat, cs, diagnostics)
+        return (x_flat, fms, diagnostics)
 
-    def init_extras(self, state):
-        # TODO: extract constraint_fn for numpyro models (via a deterministic
-        # stmtnt+model_kwargs or a Delta dist (problem: breaks log_prob))
-
+    def init_fms_and_project(self, x, init_obs_output):
         # set the constraint tolerance
-        x_flat, unravel_fn = flatten_util.ravel_pytree(state.x)
+        # Note: even though this function may run inside vmap, tolerances are
+        # always singletons. Moreover, they don't depend on the value of `x`,
+        # just their shape. Furthermore, vmap is smart and reinterprets `.shape`
+        # (and `.size`, etc) so as to return the un-vmapped value. Hence, tols
+        # are the same scalars regardless of vectorization
+        x_flat, unravel_fn = flatten_util.ravel_pytree(x)
         if 'tol' not in self.solver_options:
             self.solver_options['tol'] = utils.newton_default_tol(x_flat)
 
@@ -181,21 +236,42 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         if 'atol' not in self.x_tols:
             self.x_tols['atol'] = self.solver_options['tol'] # this val already scales with size of problem so no need to scale again
 
-        # initialize the constraint state
-        cs = make_constraint_state(
-            self.constraint_fn, x_flat, self.solver_options['tol']
+        # initialize the forward model state
+        fms = make_fwd_model_state(
+            self.fwd_model,
+            init_obs_output,
+            x_flat,
+            self.solver_options['tol']
         )
 
         # project to zero level set
-        x_flat, cs, diagnostics = self.proj_level_set(x_flat, cs)
-        if not cs.is_satisfied:
-            raise ValueError(
-                "Cannot find feasible starting point. " \
-                f"Solver output:\n{diagnostics}"
+        x_flat, fms, diagnostics = self.proj_level_set(x_flat, fms)
+        return unravel_fn(x_flat), fms, diagnostics
+
+
+    # TODO: extract `fwd_model` for numpyro models (via a deterministic
+    # stmtnt+model_kwargs or a Delta dist (problem: breaks log_prob))
+    def init_extras(self, state):
+        rng_key_shape = jnp.shape(state.rng_key)
+        if rng_key_shape == ():
+            x, fms, diagnostics = self.init_fms_and_project(
+                state.x, self.init_obs_output
+            )
+        else:
+            assert (
+                jnp.ndim(self.init_obs_output) > 0 and
+                rng_key_shape[0] == self.init_obs_output.shape[0]
+            ), "`init_obs_output` must have a leading dimension equal to " \
+               f"the number of chains requested ({rng_key_shape[0]})"
+            x, fms, diagnostics = jax.vmap(self.init_fms_and_project)(
+                state.x, self.init_obs_output
             )
 
+        assert jnp.all(fms.cs.is_satisfied), \
+            f"Cannot find feasible starting point. Solver output:\n{diagnostics}"
+
         # return updated state
-        return state._replace(x = unravel_fn(x_flat), idiosyncratic = cs)
+        return state._replace(x = x, idiosyncratic = fms)
 
     def kinetic_energy(self, state, precond_state):
         return 0.5*jnp.dot(state.p_flat, state.p_flat)
@@ -204,8 +280,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def refresh_aux_vars(self, rng_key, state, precond_state):
         return state._replace(
             p_flat = proj_normal_tangent(
-                self.constraint_fn,
-                state.idiosyncratic,
+                self.fwd_model, # Jac[fwd-mod] == Jac[constraint]
+                state.idiosyncratic.cs,
                 random.normal(rng_key, jnp.shape(state.p_flat))
             )[-1]
         )
@@ -215,7 +291,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     #   - make the likelihood 0 when constraint is not satisfied, so that
     #     solver failures are handled gracefully by the autostep executors
     def postprocess_logprior_and_loglik(self, state, log_prior, log_lik):
-        cs = state.idiosyncratic
+        cs = state.idiosyncratic.cs
         log_prior += cs.log_abs_det
         log_lik = jnp.where(cs.is_satisfied, log_lik, -jnp.inf)
         return log_prior, log_lik
@@ -224,7 +300,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     # (i.e., invariant to flipping x<->y) based on L^2-norms
     # better than jnp.allclose which is == all(jnp.isclose)
     def close_in_ambient_space(self, x, y):
-        return utils.close_in_norm(x,y,self.x_tols['rtol'],self.x_tols['atol'])
+        return utils.close_in_norm(
+            x, y, self.x_tols['rtol'], self.x_tols['atol']
+        )
 
     def maybe_build_roundtrip_state(
             self,
@@ -246,10 +324,10 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         ) -> bool:
         passed = fwd_exponent == bwd_exponent
         passed = jnp.logical_and(
-            passed, proposed_state.idiosyncratic.is_satisfied
+            passed, proposed_state.idiosyncratic.cs.is_satisfied
         )
         passed = jnp.logical_and(
-            passed, roundtrip_state.idiosyncratic.is_satisfied
+            passed, roundtrip_state.idiosyncratic.cs.is_satisfied
         )
         passed = jnp.logical_and(
             passed,
@@ -276,21 +354,25 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         x_flat_out = x_flat + step_size * v_flat
 
         # project back to level set
-        x_flat_new,cs,_ = self.proj_level_set(x_flat_out, state.idiosyncratic)
+        x_flat_new, fms, _ = self.proj_level_set(
+            x_flat_out, state.idiosyncratic
+        )
 
         # transport the velocity by projecting the displacement vector x'-x
         # onto the tangent space at the new point
         # note: the displacement is on scale step_size * v, so we must divide
         # by the step size to get the right scale
         v_flat = proj_normal_tangent(
-            self.constraint_fn, cs, x_flat_new - x_flat
+            self.fwd_model, # Jac[fwd-mod] == Jac[constraint]
+            fms.cs,
+            x_flat_new - x_flat
         )[-1] / step_size
 
         # update state and return
         return state._replace(
             x = unravel_fn(x_flat_new),
             p_flat = v_flat,
-            idiosyncratic = cs
+            idiosyncratic = fms
         )
 
     # only need to flip sign of the velocity, which was already transported

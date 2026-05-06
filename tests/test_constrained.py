@@ -15,11 +15,25 @@ from numpyro.infer import MCMC
 class TestConstrained(unittest.TestCase):
 
     def test_invalid_inputs(self):
-        with self.assertRaises(AssertionError):
+        pot = lambda x: 0.0
+        with self.assertRaisesRegex(ValueError, "You must supply one"):
+            constrained.AutoConstrainedRWMH(potential_fn=pot)
+
+        with self.assertRaisesRegex(AssertionError,"This method is justified"):
             constrained.AutoConstrainedRWMH(
-                potential_fn=lambda x: 0.0,
+                potential_fn=pot,
                 preconditioner=preconditioning.FixedDensePreconditioner(),
             )
+
+        # check unfeasible problem is caught
+        init_params = jnp.zeros(5)
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=pot,
+            fwd_model=lambda x: jnp.ones_like(x, shape=(2,)),
+            init_obs_output=jnp.array([-3,3]), # not in range of fwd mod
+        )
+        with self.assertRaisesRegex(AssertionError, "Cannot find feasible"):
+            kernel.init(jax.random.key(1), 0, init_params, (), {})
 
     def test_proj_normal_tangent(self):
         d = 3
@@ -87,7 +101,7 @@ class TestConstrained(unittest.TestCase):
                     init_params = jax.random.normal(randn_key, (n_dim,))
                     state = kernel.init(init_key, 0, init_params, (), {})
                     tol = kernel.solver_options['tol']
-                    self.assertTrue(state.idiosyncratic.is_satisfied)
+                    self.assertTrue(state.idiosyncratic.cs.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(constraint_fn(state.x)), tol
                     )
@@ -103,7 +117,7 @@ class TestConstrained(unittest.TestCase):
                     )
                     self.assertAlmostEqual(
                         state.log_prior,
-                        state.idiosyncratic.log_abs_det - potential_fn(state.x),
+                        state.idiosyncratic.cs.log_abs_det - potential_fn(state.x),
                         delta=tol
                     )
 
@@ -111,7 +125,7 @@ class TestConstrained(unittest.TestCase):
                     state_half = kernel.involution_main(
                         step_size, state, precond_state
                     )
-                    self.assertTrue(state_half.idiosyncratic.is_satisfied)
+                    self.assertTrue(state_half.idiosyncratic.cs.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(constraint_fn(state_half.x)),
                         tol
@@ -131,7 +145,7 @@ class TestConstrained(unittest.TestCase):
                     state_onehalf = kernel.involution_main(
                         step_size, state_one, precond_state
                     )
-                    self.assertTrue(state_onehalf.idiosyncratic.is_satisfied)
+                    self.assertTrue(state_onehalf.idiosyncratic.cs.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(
                             constraint_fn(state_onehalf.x)
@@ -192,7 +206,7 @@ class TestConstrained(unittest.TestCase):
         n_warm, n_keep = utils.split_n_rounds(15)
         thinning=32 # %ESS ~ 1/32
         init_params = jnp.ones(3) # init outside level set on purpose
-        extra_fields = ('idiosyncratic.log_abs_det',)
+        extra_fields = ('idiosyncratic.cs.log_abs_det',)
         for sel in (
             selectors.FixedStepSizeSelector(),
             selectors.DeterministicSymmetricSelector(),
@@ -240,7 +254,7 @@ class TestConstrained(unittest.TestCase):
         init_params=jnp.full((3,), 0.5) # init in interior of cone
         n_warm, n_keep = utils.split_n_rounds(14)
         thinning=16 # %ESS ~ 1/16
-        extra_fields = ('idiosyncratic.log_abs_det',)
+        extra_fields = ('idiosyncratic.cs.log_abs_det',)
         for sel in (
             selectors.FixedStepSizeSelector(),
             selectors.DeterministicSymmetricSelector(),
@@ -292,7 +306,7 @@ class TestConstrained(unittest.TestCase):
         init_params=jax.random.normal(init_key, (n_dim,)) # init in interior of cone
         n_warm, n_keep = utils.split_n_rounds(16)
         thinning=2**6 # %ESS ~ 1/64
-        extra_fields = ('idiosyncratic.log_abs_det',)
+        extra_fields = ('idiosyncratic.cs.log_abs_det',)
         rng_key, mcmc_key = jax.random.split(rng_key)
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn=potential_fn,
@@ -318,6 +332,68 @@ class TestConstrained(unittest.TestCase):
         traces = jax.vmap(lambda v: jnp.diag(v.reshape((d,d))).sum())(mcmc.get_samples())
         self.assertGreater(stats.ks_1samp(traces, stats.norm.cdf).pvalue, 0.01)
 
+    def test_constrained_vectorized(self):
+        # params
+        n_chains = 64
+        n_dim = 2
+        rng_key = jax.random.key(9)
+        n_warm, n_keep = utils.split_n_rounds(10)
+        thinning=16
+
+        # define an equally spaced grid in [0,1]
+        # check the Riemann integral recovers the truth (2/3) for expected radius
+        init_obs_output = jnp.arange(1, n_chains+1).reshape((n_chains,1))/n_chains
+        dr = init_obs_output[1,0]-init_obs_output[0,0]
+        self.assertAlmostEqual(
+            2*dr*jnp.square(init_obs_output).sum(), 2/3, delta=0.02
+        )
+
+        # define sampler
+        potential_fn=lambda x: jnp.zeros((), x.dtype)
+        fwd_model=lambda x: jnp.array([jnp.linalg.norm(x)])
+        mcmc_key, params_key = jax.random.split(rng_key)
+        init_params = jax.random.normal(params_key,(n_chains, n_dim))
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=potential_fn,
+            fwd_model=fwd_model,
+            init_obs_output=init_obs_output
+        )
+
+        # run mcmc and get samples
+        mcmc = MCMC(
+            kernel,
+            num_warmup=n_warm,
+            num_samples=n_keep,
+            thinning=thinning,
+            num_chains=n_chains,
+            chain_method="vectorized",
+            progress_bar=False
+        )
+        mcmc.run(mcmc_key,init_params=init_params)
+        samples = mcmc.get_samples(True)
+
+        # make sure we didn't request too small radii
+        self.assertGreater(init_obs_output[0,0], kernel.solver_options['tol'])
+
+        # check that the fwd model is respected along chains at every sample step
+        fwd_vals = jax.vmap(jax.vmap(fwd_model))(samples)
+        self.assertTrue(jnp.all(
+            jax.vmap(
+                partial(jnp.allclose, rtol=0, atol=kernel.solver_options['tol']),
+                in_axes=(1,None),
+            )(fwd_vals, init_obs_output)
+        ))
+
+        # but also check that the submanifolds are explored by ensuring the
+        # angles follow a Unif(-pi,pi) distribution
+        # use a simple histogram check instead of KS test (too sensitive at
+        # this number of samples, which are not really indep anyway)
+        # impose grid to avoid being fooled by constant data
+        angles = jnp.arctan2(samples[:,:,0],samples[:,:,1]).flatten()
+        hist = jnp.histogram(angles,bins=jnp.linspace(-jnp.pi, jnp.pi, 11))
+        self.assertTrue(
+            jnp.allclose(hist[0], samples.size/(10*n_dim), rtol=0.1)
+        )
 
 
 if __name__ == '__main__':
