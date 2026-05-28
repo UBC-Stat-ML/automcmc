@@ -37,32 +37,34 @@ def log_prob_site(site):
 
     if (scale is not None) and (not is_identically_one(scale)):
         log_prob_sum = scale * log_prob_sum
-    
+
     return log_prob_sum
 
 def is_observation(site):
-    return site["is_observed"] and (not site["name"].endswith("_log_det"))
+    return (
+        site["is_observed"] and (not site['infer'].get('is_auxiliary', False))
+    )
 
 def log_prior(model_trace):
     return sum(
-        log_prob_site(site) 
+        log_prob_site(site)
         for site in model_trace.values()
         if site["type"] == "sample" and (not is_observation(site))
     )
 
 def log_lik(model_trace):
     return sum(
-        log_prob_site(site) 
+        log_prob_site(site)
         for site in model_trace.values()
         if site["type"] == "sample" and is_observation(site)
     )
 
 # full trace from unconstrained sample
 def trace_from_unconst_samples(
-        model, 
-        model_args, 
+        model,
+        model_args,
         model_kwargs,
-        unconstrained_sample, 
+        unconstrained_sample,
     ):
     """
     Generate a full model trace from a sample in unconstrained space.
@@ -75,7 +77,7 @@ def trace_from_unconst_samples(
     """
     substituted_model = substitute(
         model, substitute_fn=partial(
-            util._unconstrain_reparam, 
+            util._unconstrain_reparam,
             unconstrained_sample
         )
     )
@@ -94,13 +96,13 @@ def model_logprior_and_loglik(model, model_args, model_kwargs, unconstrained_sam
     :return: The log-prior and log-likelihood evaluated at the given sample.
     """
     model_trace = trace_from_unconst_samples(
-        model, 
-        model_args, 
+        model,
+        model_args,
         model_kwargs,
         unconstrained_sample
     )
     return (log_prior(model_trace), log_lik(model_trace))
-   
+
 # tempered potential of a model
 def tempered_potential_from_logprior_and_loglik(log_prior, log_lik, inv_temp):
     """
@@ -130,7 +132,7 @@ def tempered_potential_from_logprior_and_loglik(log_prior, log_lik, inv_temp):
         scaled_loglik = jnp.where(
             inv_temp == actual_zero,
             actual_zero,
-            inv_temp*log_lik            
+            inv_temp*log_lik
         )
         return -(log_prior + scaled_loglik)
 
