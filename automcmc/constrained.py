@@ -1,137 +1,217 @@
+from abc import ABCMeta, abstractmethod
 from typing import NamedTuple, Callable, Any
 
 import jax
 from jax.typing import ArrayLike
 from jax import flatten_util, random, numpy as jnp
 
-from automcmc import utils, autostep, preconditioning
+from automcmc import utils, autostep, preconditioning, optimization
 from automcmc.automcmc import AutoMCMCState
 
-class ConstraintState(NamedTuple):
+DEBUG_CONSTRAINED_SAMPLING = False
+
+###############################################################################
+# Classes that handle the projection onto the normal and tangent spaces
+###############################################################################
+
+class LevelSetState(NamedTuple):
     """
-    A :class:`NamedTuple` describing the zero-level set of a constraint.
+    A :class:`NamedTuple` describing the forward model around a base point, and
+    its agreement with an observed model output.
 
     Attributes:
-        is_satisfied: true if `f(x_base)=0` up to tolerance.
         x_base: point that dictates the level set :math:`f^{-1}(\\{f(x)\\})`
-            and the tangent and normal spaces that determine the projections
-            onto said level set. We assume `x_base` is flattened.
-        chol: a lower triangular matrix arising from the Cholesky decomposition
-            of :math:`J_xJ_x^T`, where :math:`J_x` is the Jacobian of the
-            constraint evaluated at `x_base`.
-        log_abs_det: log of :math:`|J_xJ_x^T|^{-1/2}` computed using the
-            Cholesky decomposition.
+            We assume `x_base` is one-dimensional (i.e., a vector).
+        obs_output: an output of the forward model :math:`y`, dictating the
+            level set :math:`f^{-1}(y)`.
+        is_satisfied: true if `f(x_base)=y` (up to tolerance); i.e., if the two
+            level sets described above are the same.
+        log_abs_det: logarithm of :math:`|J_xJ_x^T|^{-1/2}` at `x_base`.
+        mat: a matrix used for projection onto the constraint set. Depends on
+            the handler used.
     """
+    x_base: jax.Array
+    obs_output: jax.Array
     is_satisfied: ArrayLike
-    x_base: ArrayLike
-    chol: jax.Array
     log_abs_det: jax.Array
-
-def make_constraint_state(
-        constraint_fn: Callable[[ArrayLike], jax.Array],
-        x_base: ArrayLike,
-        tol: ArrayLike
-    ) -> ConstraintState:
-    """
-    Build a :class:`ConstraintState`.
-
-    :param constraint_fn: the constraint function.
-    :param x_base: base point; see :class:`ConstraintState`.
-    :param tol: tolerance for constraint satisfiability.
-    :return: a :class:`ConstraintState` corresponding to `x_base`.
-    """
-    J, f_val = jax.jacrev(lambda x: 2*(constraint_fn(x),),has_aux=True)(x_base) # get Jacobian and value in one pass
-    is_satisfied = utils.newton_fn_value_err(f_val) < tol
-    m, n = jnp.shape(J)
-    assert m < n
-    chol = jax.lax.linalg.cholesky(jnp.inner(J,J))
-    log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
-    return ConstraintState(is_satisfied, x_base, chol, log_abs_det)
+    mat: jax.Array
 
 
-class ForwardModelState(NamedTuple):
-    """
-    A :class:`NamedTuple` describing a specific level set of a forward model.
+class LevelSetHandler(metaclass=ABCMeta):
 
-    Attributes:
-        cs: an instance of :class:`ConstraintState`.
-        obs_output: output of the forward model at `cs.x_base`.
-    """
-    cs: ConstraintState
-    obs_output: ArrayLike
+    @staticmethod
+    def get_jacobian_and_check_output(fwd_model, obs_output, x_base, tol):
+        # get Jacobian and value in one pass
+        # use reverse-mode because we work in the m<n world
+        J, f_val = jax.jacrev(
+            lambda x: 2*(fwd_model(x),), has_aux=True
+        )(x_base)
+        is_satisfied = utils.newton_fn_value_err(f_val-obs_output) < tol
+        m, n = jnp.shape(J)
+        assert m < n
+        return J, is_satisfied
 
-
-def make_fwd_model_state(
+    @abstractmethod
+    def make_levelset_state(
+        self,
         fwd_model: Callable[[ArrayLike], jax.Array],
         obs_output: ArrayLike,
-        *args
-    ) -> ForwardModelState:
-    """
-    Build :class:`ForwardModelState` from a forward model function and an
-    observed output.
+        x_base: ArrayLike,
+        tol: ArrayLike
+    ) -> LevelSetState:
+        """
+        Build :class:`LevelSetState` from a forward model function and an
+        observed output.
 
-    :param fwd_model: the forward model.
-    :param obs_output: an observed output of the forward model.
-    :param args: passed to :func:`make_constraint_state`.
-    :return: a :class:`ForwardModelState`.
-    """
-    return ForwardModelState(
-        make_constraint_state(
-            lambda x: fwd_model(x) - obs_output,
-            *args
-        ),
-        obs_output
-    )
+        :param fwd_model: the forward model.
+        :param obs_output: an observed output of the forward model.
+        :param x_base: base point; see :class:`LevelSetState`.
+        :param tol: tolerance for constraint satisfiability.
+        :return: a :class:`LevelSetState` corresponding to `x_base`.
+        """
+        pass
 
-# project onto normal (N) space
-#   P[N]v = J^T(JJ^T)^{-1}Jv
-# Following Xu&Holmes-Cerfon(2024), we can do this in steps
-#   1) u = Jv --> single jvp, O(1 func eval). For norm-like f, this is O(nm)
-#   2) solve for w: LL^Tw=u <=> w = L^{-T}[L^{-1}u]
-#                           <=> t=L^{-1}u and w=L^{-T}t
-#       a) O(m^2) triangular solve for t: Lt = u
-#       b) O(m^2) triangular solve for w: L^Tw=t
-#   3) P[N]v = J^Tw = (w^TJ)^T --> single vjp, O(1 func eval)
-# Cost: O(nm + m^2)
-def proj_normal(
-        constraint_fn: Callable[[ArrayLike], jax.Array],
-        cs: ConstraintState,
+    @staticmethod
+    @abstractmethod
+    def proj_normal(
+        fwd_model: Callable[[ArrayLike], jax.Array],
+        lss: LevelSetState,
         v: ArrayLike
     ) -> jax.Array:
-    """
-    Project a vector onto the normal space at `cs.x_base`.
+        """
+        Project a vector onto the normal space dictated by a
+        :class:`LevelSetState`.
 
-    :param constraint_fn: the constraint function.
-    :param cs: a :class:`ConstraintState` dictating the normal space.
-    :param v: vector to project.
-    :return: normal component of `v`.
-    """
-    u = jax.jvp(constraint_fn, (cs.x_base,), (v,))[-1]
-    t = jax.lax.linalg.triangular_solve(cs.chol, u, lower=True) # == jnp.linalg.solve(cs.chol, u)
-    w = jax.lax.linalg.triangular_solve(
-        cs.chol, t, lower=True, transpose_a=True # == jnp.linalg.solve(cs.chol.T, t)
-    )
-    f_vjp = jax.vjp(constraint_fn, cs.x_base)[-1]
-    return f_vjp(w)[0]
+        :param fwd_model: the forward model.
+        :param lss: a :class:`LevelSetState` dictating the normal space.
+        :param v: vector to project.
+        :return: normal component of `v`.
+        """
+        pass
 
-# project onto normal (N) and tangent (T) spaces
-# same as cost of just doing the normal part
-def proj_normal_tangent(
-        constraint_fn: Callable[[ArrayLike], jax.Array],
-        cs: ConstraintState,
-        v: ArrayLike
-    ) -> tuple[jax.Array, jax.Array]:
-    """
-    Project a vector onto the normal and tangent spaces at `cs.x_base`.
+    # project onto normal (N) and tangent (T) spaces
+    # same as cost of just doing the normal part
+    def proj_normal_tangent(
+            self,
+            fwd_model: Callable[[ArrayLike], jax.Array],
+            lss: LevelSetState,
+            v: ArrayLike
+        ) -> tuple[jax.Array, jax.Array]:
+        """
+        Project a vector onto the normal and tangent spaces dictated by a
+        :class:`LevelSetState`.
 
-    :param constraint_fn: the constraint function.
-    :param cs: a :class:`ConstraintState` dictating the normal space.
-    :param v: vector to project.
-    :return: normal and tangent components of `v`.
-    """
-    PNv = proj_normal(constraint_fn, cs, v)
-    return (PNv, v - PNv)
+        :param fwd_model: the forward model.
+        :param lss: a :class:`LevelSetState`.
+        :param v: vector to project.
+        :return: normal and tangent components of `v`.
+        """
+        PNv = self.proj_normal(fwd_model, lss, v)
+        return (PNv, v - PNv)
 
+
+class LevelSetHandlerChol(LevelSetHandler):
+    """
+    Handles the projection onto the normal space using an approach based on
+    `jvp`, `vjp`, and the Cholesky decomposition of :math:`J_xJ_x^T` [1].
+    Its main benefit is that projections have cost :math:`O(2nm + m^2)` and
+    memory :math:`O(n+m^2)`. The linear scaling in `n` makes it ideal for
+    high-dimensional settings. However, the method suffers from low accuracy
+    issues when the level sets exhibit high curvature.
+
+    .. rubric:: References
+
+    [1] Xu, K., & Holmes-Cerfon, M. (2024). Monte Carlo on manifolds in high
+    dimensions. *Journal of Computational Physics*, 506, 112939.
+    """
+    def make_levelset_state(
+            self,
+            fwd_model: Callable[[ArrayLike], jax.Array],
+            obs_output: ArrayLike,
+            x_base: ArrayLike,
+            tol: ArrayLike
+        ) -> LevelSetState:
+        J, is_satisfied = self.get_jacobian_and_check_output(
+            fwd_model, x_base, obs_output, tol
+        )
+        chol = jax.lax.linalg.cholesky(jnp.inner(J,J))
+        log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
+        return LevelSetState(
+            x_base, obs_output, is_satisfied, log_abs_det, chol
+        )
+
+    # project onto normal (N) space
+    #   P[N]v = J^T(JJ^T)^{-1}Jv
+    # Following Xu&Holmes-Cerfon(2024), we can do this in steps
+    #   1) u = Jv --> single jvp, O(1 func eval). For norm-like f, this is O(nm)
+    #   2) solve for w: LL^Tw=u <=> w = L^{-T}[L^{-1}u]
+    #                           <=> t=L^{-1}u and w=L^{-T}t
+    #       a) O(m^2) triangular solve for t: Lt = u
+    #       b) O(m^2) triangular solve for w: L^Tw=t
+    #   3) P[N]v = J^Tw = (w^TJ)^T --> single vjp, O(1 func eval)
+    # Cost: O(2nm + m^2)
+    @staticmethod
+    def proj_normal(
+            fwd_model: Callable[[ArrayLike], jax.Array],
+            lss: LevelSetState,
+            v: ArrayLike
+        ) -> jax.Array:
+        chol = lss.mat
+        u = jax.jvp(fwd_model, (lss.x_base,), (v,))[-1]
+        t = jax.lax.linalg.triangular_solve(chol, u, lower=True) # == jnp.linalg.solve(cs.chol, u)
+        w = jax.lax.linalg.triangular_solve(
+            chol, t, lower=True, transpose_a=True # == jnp.linalg.solve(cs.chol.T, t)
+        )
+        f_vjp = jax.vjp(fwd_model, lss.x_base)[-1]
+        return f_vjp(w)[0]
+
+
+class LevelSetHandlerQR(LevelSetHandler):
+    """
+    Handles the projection onto the normal space using the QR decomposition
+    of :math:`J_x^T` [1]. It is simple and remarkably accurate even in high
+    curvature scenarios. However, its cost is :math:`O(nm^2+n^2m)` and uses
+    space :math:`O(nm)`, making it expensive in the big `n` scenario.
+
+    .. rubric:: References
+
+    [1] Zappa, E., Holmes-Cerfon, M. & Goodman, J. (2018).
+    Monte Carlo on manifolds: Sampling densities and integrating functions.
+    *Comm. Pure Appl. Math.*, 71, 2609-2647.
+    """
+    def make_levelset_state(
+            self,
+            fwd_model: Callable[[ArrayLike], jax.Array],
+            obs_output: ArrayLike,
+            x_base: ArrayLike,
+            tol: ArrayLike
+        ) -> LevelSetState:
+        J, is_satisfied = self.get_jacobian_and_check_output(
+            fwd_model, x_base, obs_output, tol
+        )
+        Q,R = jnp.linalg.qr(J.T)
+        log_abs_det = -jnp.log(jnp.abs(jnp.diag(R))).sum()
+        return LevelSetState(
+            x_base, obs_output, is_satisfied, log_abs_det, Q
+        )
+
+    # project onto normal (N) space
+    #   P[N]v = J^T(JJ^T)^{-1}Jv
+    # If J^T = QR, then JJ^T = R^TR and
+    #   P[N]v = [QR(R^TR)^{-1}R^TQ^T]v = QQ^Tv
+    @staticmethod
+    def proj_normal(
+            fwd_model: Callable[[ArrayLike], jax.Array],
+            lss: LevelSetState,
+            v: ArrayLike
+        ) -> jax.Array:
+        Q = lss.mat
+        return Q @ jnp.dot(v,Q)
+
+
+###############################################################################
+# Sampler definition
+###############################################################################
 
 class AutoConstrainedRWMH(autostep.AutoStep):
     """
@@ -158,6 +238,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             init_obs_output=None,
             solver_options = {},
             x_tols = {},
+            levelset_finder_settings = None,
             **kwargs
         ):
         super().__init__(*args,preconditioner=preconditioner,**kwargs)
@@ -181,50 +262,80 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         self.init_obs_output = 0 if init_obs_output is None else init_obs_output
         self.solver_options = solver_options
         self.x_tols = x_tols
+        if levelset_finder_settings is None:
+            # shallow copy is enough since we only change `n_iter`
+            levelset_finder_settings = (
+                optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS['NADAMW'].copy()
+            )
+            levelset_finder_settings['n_iter'] = 256
+
+        self.levelset_finder_settings = levelset_finder_settings
 
     def proj_level_set(
             self,
             x_flat: ArrayLike,
-            fms: ForwardModelState
+            lss: LevelSetState
         ) -> tuple[Any, ...]:
         """
         Project a point on the level set determined by a
-        :class:`ForwardModelState`.
+        :class:`LevelSetState`.
 
         :param ArrayLike x_flat: a vector.
-        :param ForwardModelState fms: determines the level set that is being
+        :param LevelSetState lss: determines the level set that is being
             targeted.
         :return tuple[Any, ...]: projected vector, updated
-            :class:`ForwardModelState`, and solver diagnostics.
+            :class:`LevelSetState`, and solver diagnostics.
         """
         # project to the feasible set in the normal directions at cs.x_base
         #   solve for z: 0 = f(x + J^Tz) => set x' = x + J^Tz
         # since J^Tz = (z^TJ)^T, we can use vector-Jacobian prods (vjp)
-        f_val, f_vjp = jax.vjp(self.fwd_model, fms.cs.x_base) # Jac[fwd-mod] == Jac[constr]
+        f_val, f_vjp = jax.vjp(self.fwd_model, lss.x_base) # Jac[fwd-mod] == Jac[constr]
         z, *diagnostics, _ = utils.newton(
-            lambda z: self.fwd_model(x_flat + f_vjp(z)[0]) - fms.obs_output,
+            lambda z: self.fwd_model(x_flat + f_vjp(z)[0]) - lss.obs_output,
             jnp.zeros_like(f_val),
             **self.solver_options
         )
         x_flat += f_vjp(z)[0]
 
         # update the constraint state and return
-        fms = make_fwd_model_state(
+        lss = make_fwd_model_state(
             self.fwd_model,
-            fms.obs_output,
+            lss.obs_output,
             x_flat,
             self.solver_options['tol']
         )
-        return (x_flat, fms, diagnostics)
+        return (x_flat, lss, diagnostics)
 
-    def init_fms_and_project(self, x, init_obs_output):
+    # preliminary pass with gradient descent on least-squares loss to get close to
+    # levelset, as Newton fails when initialized too far away
+    def find_levelset(self, x_flat, init_obs_output):
+        n_iter = self.levelset_finder_settings['n_iter']
+        target_fun = lambda x: jnp.square(
+            self.fwd_model(x) - init_obs_output
+        ).sum()
+        solver, step_fn = optimization.make_nadamw_solver(
+            target_fun, self.levelset_finder_settings['solver_params'], False
+        )
+        opt_state = solver.init(x_flat)
+        return jax.lax.scan(
+            lambda t,_: (step_fn(t[0], t[1])[:2], None),
+            (x_flat, opt_state),
+            length=n_iter
+        )[0][0]
+
+    def init_lss_and_project(self, x, init_obs_output):
+        # Home in on the levelset using gradient descent (currently NADAMW)
+        # This is required because Newton's method fails when started too far
+        # from the levelset
+        x_flat, unravel_fn = flatten_util.ravel_pytree(x)
+        x_flat = self.find_levelset(x_flat, init_obs_output)
+
         # set the constraint tolerance
         # Note: even though this function may run inside vmap, tolerances are
         # always singletons. Moreover, they don't depend on the value of `x`,
         # just their shape. Furthermore, vmap is smart and reinterprets `.shape`
         # (and `.size`, etc) so as to return the un-vmapped value. Hence, tols
         # are the same scalars regardless of vectorization
-        x_flat, unravel_fn = flatten_util.ravel_pytree(x)
         if 'tol' not in self.solver_options:
             self.solver_options['tol'] = utils.newton_default_tol(x_flat)
 
@@ -237,7 +348,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             self.x_tols['atol'] = self.solver_options['tol'] # this val already scales with size of problem so no need to scale again
 
         # initialize the forward model state
-        fms = make_fwd_model_state(
+        lss = make_fwd_model_state(
             self.fwd_model,
             init_obs_output,
             x_flat,
@@ -245,8 +356,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         )
 
         # project to zero level set
-        x_flat, fms, diagnostics = self.proj_level_set(x_flat, fms)
-        return unravel_fn(x_flat), fms, diagnostics
+        x_flat, lss, diagnostics = self.proj_level_set(x_flat, lss)
+        return unravel_fn(x_flat), lss, diagnostics
 
 
     # TODO: extract `fwd_model` for numpyro models (via a deterministic
@@ -254,7 +365,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def init_extras(self, state):
         rng_key_shape = jnp.shape(state.rng_key)
         if rng_key_shape == ():
-            x, fms, diagnostics = self.init_fms_and_project(
+            x, lss, diagnostics = self.init_lss_and_project(
                 state.x, self.init_obs_output
             )
         else:
@@ -263,15 +374,15 @@ class AutoConstrainedRWMH(autostep.AutoStep):
                 rng_key_shape[0] == self.init_obs_output.shape[0]
             ), "`init_obs_output` must have a leading dimension equal to " \
                f"the number of chains requested ({rng_key_shape[0]})"
-            x, fms, diagnostics = jax.vmap(self.init_fms_and_project)(
+            x, lss, diagnostics = jax.vmap(self.init_lss_and_project)(
                 state.x, self.init_obs_output
             )
 
-        assert jnp.all(fms.cs.is_satisfied), \
+        assert jnp.all(lss.cs.is_satisfied), \
             f"Cannot find feasible starting point. Solver output:\n{diagnostics}"
 
         # return updated state
-        return state._replace(x = x, idiosyncratic = fms)
+        return state._replace(x = x, idiosyncratic = lss)
 
     def kinetic_energy(self, state, precond_state):
         return 0.5*jnp.dot(state.p_flat, state.p_flat)
@@ -323,11 +434,20 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             roundtrip_state: AutoMCMCState
         ) -> bool:
         passed = fwd_exponent == bwd_exponent
+        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
+            "exponents match: {}", passed, ordered=True
+        )
         passed = jnp.logical_and(
             passed, proposed_state.idiosyncratic.cs.is_satisfied
         )
+        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
+            "and prop state is feasible: {}", passed, ordered=True
+        )
         passed = jnp.logical_and(
             passed, roundtrip_state.idiosyncratic.cs.is_satisfied
+        )
+        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
+            "and rt state is feasible: {}", passed, ordered=True
         )
         passed = jnp.logical_and(
             passed,
@@ -336,12 +456,24 @@ class AutoConstrainedRWMH(autostep.AutoStep):
                 flatten_util.ravel_pytree(roundtrip_state.x)[0]
             )
         )
-        return jnp.logical_and(
+        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
+            "and rt state is close to init: {}", passed, ordered=True
+        )
+        passed = jnp.logical_and(
             passed,
             self.close_in_ambient_space(
                 initial_state.p_flat, roundtrip_state.p_flat
             )
         )
+        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
+            "and rt vel is close to init: {}", passed, ordered=True
+        )
+        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
+            "\ninit_st={}\n\nprop_st={}\n\nrt_st={}",
+            initial_state, proposed_state, roundtrip_state,
+            ordered=True
+        )
+        return passed
 
 
     # Both position and velocity are affected by this transform
@@ -354,7 +486,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         x_flat_out = x_flat + step_size * v_flat
 
         # project back to level set
-        x_flat_new, fms, _ = self.proj_level_set(
+        x_flat_new, lss, _ = self.proj_level_set(
             x_flat_out, state.idiosyncratic
         )
 
@@ -364,7 +496,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # by the step size to get the right scale
         v_flat = proj_normal_tangent(
             self.fwd_model, # Jac[fwd-mod] == Jac[constraint]
-            fms.cs,
+            lss.cs,
             x_flat_new - x_flat
         )[-1] / step_size
 
@@ -372,7 +504,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         return state._replace(
             x = unravel_fn(x_flat_new),
             p_flat = v_flat,
-            idiosyncratic = fms
+            idiosyncratic = lss
         )
 
     # only need to flip sign of the velocity, which was already transported
