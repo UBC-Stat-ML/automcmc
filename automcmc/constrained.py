@@ -110,14 +110,14 @@ class LevelSetHandler(metaclass=ABCMeta):
         return (PNv, v - PNv)
 
 
-class LevelSetHandlerChol(LevelSetHandler):
+class LevelSetHandlerCholesky(LevelSetHandler):
     """
     Handles the projection onto the normal space using an approach based on
     `jvp`, `vjp`, and the Cholesky decomposition of :math:`J_xJ_x^T` [1].
-    Its main benefit is that projections have cost :math:`O(2nm + m^2)` and
-    memory :math:`O(n+m^2)`. The linear scaling in `n` makes it ideal for
-    high-dimensional settings. However, the method suffers from low accuracy
-    issues when the level sets exhibit high curvature.
+    Its main benefit is that each operation has complexity at most linear
+    in `n` while only using :math:`O(n+m^2)` memory, making it ideal for
+    high-dimensional settings. However, the method exhibits low accuracy in the
+    presence of high curvature.
 
     .. rubric:: References
 
@@ -132,7 +132,7 @@ class LevelSetHandlerChol(LevelSetHandler):
             tol: ArrayLike
         ) -> LevelSetState:
         J, is_satisfied = self.get_jacobian_and_check_output(
-            fwd_model, x_base, obs_output, tol
+            fwd_model, obs_output, x_base, tol
         )
         chol = jax.lax.linalg.cholesky(jnp.inner(J,J))
         log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
@@ -158,9 +158,9 @@ class LevelSetHandlerChol(LevelSetHandler):
         ) -> jax.Array:
         chol = lss.mat
         u = jax.jvp(fwd_model, (lss.x_base,), (v,))[-1]
-        t = jax.lax.linalg.triangular_solve(chol, u, lower=True) # == jnp.linalg.solve(cs.chol, u)
+        t = jax.lax.linalg.triangular_solve(chol, u, lower=True) # == jnp.linalg.solve(chol, u)
         w = jax.lax.linalg.triangular_solve(
-            chol, t, lower=True, transpose_a=True # == jnp.linalg.solve(cs.chol.T, t)
+            chol, t, lower=True, transpose_a=True # == jnp.linalg.solve(chol.T, t)
         )
         f_vjp = jax.vjp(fwd_model, lss.x_base)[-1]
         return f_vjp(w)[0]
@@ -187,7 +187,7 @@ class LevelSetHandlerQR(LevelSetHandler):
             tol: ArrayLike
         ) -> LevelSetState:
         J, is_satisfied = self.get_jacobian_and_check_output(
-            fwd_model, x_base, obs_output, tol
+            fwd_model, obs_output, x_base, tol
         )
         Q,R = jnp.linalg.qr(J.T)
         log_abs_det = -jnp.log(jnp.abs(jnp.diag(R))).sum()
@@ -199,14 +199,15 @@ class LevelSetHandlerQR(LevelSetHandler):
     #   P[N]v = J^T(JJ^T)^{-1}Jv
     # If J^T = QR, then JJ^T = R^TR and
     #   P[N]v = [QR(R^TR)^{-1}R^TQ^T]v = QQ^Tv
+    # Cost: O(mn)
     @staticmethod
     def proj_normal(
-            fwd_model: Callable[[ArrayLike], jax.Array],
+            _: Callable[[ArrayLike], jax.Array],
             lss: LevelSetState,
             v: ArrayLike
         ) -> jax.Array:
         Q = lss.mat
-        return Q @ jnp.dot(v,Q)
+        return Q @ jnp.dot(v,Q) # dot(v,Q) === Q.T@v
 
 
 ###############################################################################
@@ -233,9 +234,10 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             self,
             *args,
             preconditioner=preconditioning.IdentityDiagonalPreconditioner(), # we need rotational symmetry
-            constraint_fn=None, # aim is to target `constraint_fn=0`. Input var is x_flat.
+            constraint_fn=None,
             fwd_model=None,
             init_obs_output=None,
+            levelset_handler = LevelSetHandlerQR(),
             solver_options = {},
             x_tols = {},
             levelset_finder_settings = None,
@@ -260,9 +262,13 @@ class AutoConstrainedRWMH(autostep.AutoStep):
 
         self.fwd_model = fwd_model
         self.init_obs_output = 0 if init_obs_output is None else init_obs_output
+        self.levelset_handler = levelset_handler
         self.solver_options = solver_options
         self.x_tols = x_tols
-        if levelset_finder_settings is None:
+        if (
+            levelset_finder_settings and
+            (not isinstance(levelset_finder_settings, dict))
+            ):
             # shallow copy is enough since we only change `n_iter`
             levelset_finder_settings = (
                 optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS['NADAMW'].copy()
@@ -286,8 +292,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         :return tuple[Any, ...]: projected vector, updated
             :class:`LevelSetState`, and solver diagnostics.
         """
-        # project to the feasible set in the normal directions at cs.x_base
-        #   solve for z: 0 = f(x + J^Tz) => set x' = x + J^Tz
+        # project to the feasible set in the normal directions at x_base
+        #   solve for z: y = f(x + J^Tz) => set x' = x + J^Tz
         # since J^Tz = (z^TJ)^T, we can use vector-Jacobian prods (vjp)
         f_val, f_vjp = jax.vjp(self.fwd_model, lss.x_base) # Jac[fwd-mod] == Jac[constr]
         z, *diagnostics, _ = utils.newton(
@@ -298,7 +304,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         x_flat += f_vjp(z)[0]
 
         # update the constraint state and return
-        lss = make_fwd_model_state(
+        lss = self.levelset_handler.make_levelset_state(
             self.fwd_model,
             lss.obs_output,
             x_flat,
@@ -309,6 +315,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     # preliminary pass with gradient descent on least-squares loss to get close to
     # levelset, as Newton fails when initialized too far away
     def find_levelset(self, x_flat, init_obs_output):
+        if not isinstance(self.levelset_finder_settings, dict):
+            return x_flat
         n_iter = self.levelset_finder_settings['n_iter']
         target_fun = lambda x: jnp.square(
             self.fwd_model(x) - init_obs_output
@@ -348,7 +356,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             self.x_tols['atol'] = self.solver_options['tol'] # this val already scales with size of problem so no need to scale again
 
         # initialize the forward model state
-        lss = make_fwd_model_state(
+        lss = self.levelset_handler.make_levelset_state(
             self.fwd_model,
             init_obs_output,
             x_flat,
@@ -378,7 +386,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
                 state.x, self.init_obs_output
             )
 
-        assert jnp.all(lss.cs.is_satisfied), \
+        assert jnp.all(lss.is_satisfied), \
             f"Cannot find feasible starting point. Solver output:\n{diagnostics}"
 
         # return updated state
@@ -390,9 +398,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     # sample and project to tangent space
     def refresh_aux_vars(self, rng_key, state, precond_state):
         return state._replace(
-            p_flat = proj_normal_tangent(
+            p_flat = self.levelset_handler.proj_normal_tangent(
                 self.fwd_model, # Jac[fwd-mod] == Jac[constraint]
-                state.idiosyncratic.cs,
+                state.idiosyncratic,
                 random.normal(rng_key, jnp.shape(state.p_flat))
             )[-1]
         )
@@ -402,9 +410,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     #   - make the likelihood 0 when constraint is not satisfied, so that
     #     solver failures are handled gracefully by the autostep executors
     def postprocess_logprior_and_loglik(self, state, log_prior, log_lik):
-        cs = state.idiosyncratic.cs
-        log_prior += cs.log_abs_det
-        log_lik = jnp.where(cs.is_satisfied, log_lik, -jnp.inf)
+        lss = state.idiosyncratic
+        log_prior += lss.log_abs_det
+        log_lik = jnp.where(lss.is_satisfied, log_lik, -jnp.inf)
         return log_prior, log_lik
 
     # check closeness of ambient space vectors by using a symmetric check
@@ -438,13 +446,13 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             "exponents match: {}", passed, ordered=True
         )
         passed = jnp.logical_and(
-            passed, proposed_state.idiosyncratic.cs.is_satisfied
+            passed, proposed_state.idiosyncratic.is_satisfied
         )
         DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
             "and prop state is feasible: {}", passed, ordered=True
         )
         passed = jnp.logical_and(
-            passed, roundtrip_state.idiosyncratic.cs.is_satisfied
+            passed, roundtrip_state.idiosyncratic.is_satisfied
         )
         DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
             "and rt state is feasible: {}", passed, ordered=True
@@ -494,9 +502,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # onto the tangent space at the new point
         # note: the displacement is on scale step_size * v, so we must divide
         # by the step size to get the right scale
-        v_flat = proj_normal_tangent(
+        v_flat = self.levelset_handler.proj_normal_tangent(
             self.fwd_model, # Jac[fwd-mod] == Jac[constraint]
-            lss.cs,
+            lss,
             x_flat_new - x_flat
         )[-1] / step_size
 
