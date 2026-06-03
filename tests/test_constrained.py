@@ -9,9 +9,17 @@ from scipy import stats
 import jax
 from jax import numpy as jnp
 
-from automcmc import constrained,utils,preconditioning,selectors
+from automcmc import (
+    constrained,
+    utils,
+    preconditioning,
+    selectors,
+    optimization
+)
 from automcmc.constrained import LevelSetHandlerCholesky, LevelSetHandlerQR
 from numpyro.infer import MCMC
+
+TESTED_LEVELSET_HANDLERS = (LevelSetHandlerCholesky(), LevelSetHandlerQR())
 
 class TestConstrained(unittest.TestCase):
 
@@ -42,9 +50,7 @@ class TestConstrained(unittest.TestCase):
         m = (n+d)//2 # d(d+1)//2
         n_sim = 10
         rng_key = jax.random.key(1)
-        for levelset_handler in (
-            LevelSetHandlerCholesky(), LevelSetHandlerQR()
-            ):
+        for levelset_handler in TESTED_LEVELSET_HANDLERS:
             for n_rep in range(n_sim):
                 with self.subTest(
                     levelset_handler_type=type(levelset_handler), n_rep=n_rep,
@@ -311,42 +317,48 @@ class TestConstrained(unittest.TestCase):
     def test_sample_orthonormal(self):
         # matrices with orthonormal rows
         # Example 3 in Zappa & Holmes-Cerfon (2018)
-        # TODO: show that JJ^T is indeed constant (empirically true so far)
         constraint_fn=testutils.orthonormal_constraint
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
         d = 11
         n_dim = d*d
 
-        # mcmc sampling
-        rng_key, init_key = jax.random.split(jax.random.key(53))
-        init_params=jax.random.normal(init_key, (n_dim,)) # init in interior of cone
-        n_warm, n_keep = utils.split_n_rounds(16)
-        thinning=2**6 # %ESS ~ 1/64
-        extra_fields = ('idiosyncratic.log_abs_det',)
-        rng_key, mcmc_key = jax.random.split(rng_key)
-        kernel = constrained.AutoConstrainedRWMH(
-            potential_fn=potential_fn,
-            constraint_fn=constraint_fn,
-            solver_options={'mode': 'direct'},
-            init_base_step_size = 0.28, # in paper
-            selector = selectors.FixedStepSizeSelector()
-        )
-        mcmc = MCMC(
-            kernel,
-            num_warmup=n_warm,
-            num_samples=n_keep,
-            thinning=thinning,
-            progress_bar=False
-        )
-        mcmc.run(
-            mcmc_key, init_params=init_params, extra_fields=extra_fields
-        )
-        log_abs_det = next(iter((mcmc.get_extra_fields().values())))
-        self.assertLess(log_abs_det.std(), 0.05)
+        for levelset_handler in TESTED_LEVELSET_HANDLERS:
+            with self.subTest(levelset_handler_type=type(levelset_handler)):
+                # mcmc sampling
+                rng_key, init_key = jax.random.split(jax.random.key(53))
+                init_params=jax.random.normal(init_key, (n_dim,)) # init in interior of cone
+                n_warm, n_keep = utils.split_n_rounds(13)
+                thinning=2**6 # %ESS ~ 1/64
+                extra_fields = ('idiosyncratic.log_abs_det',)
+                rng_key, mcmc_key = jax.random.split(rng_key)
+                kernel = constrained.AutoConstrainedRWMH(
+                    potential_fn=potential_fn,
+                    constraint_fn=constraint_fn,
+                    solver_options={'mode': 'direct'},
+                    init_base_step_size = 0.28, # in paper
+                    selector = selectors.FixedStepSizeSelector(),
+                    levelset_handler=levelset_handler
+                )
+                mcmc = MCMC(
+                    kernel,
+                    num_warmup=n_warm,
+                    num_samples=n_keep,
+                    thinning=thinning,
+                    progress_bar=False
+                )
+                mcmc.run(
+                    mcmc_key, init_params=init_params, extra_fields=extra_fields
+                )
+                log_abs_det = next(iter((mcmc.get_extra_fields().values())))
+                self.assertLess(log_abs_det.std(), 0.05)
 
-        # ks test for normality of traces of the matrices
-        traces = jax.vmap(lambda v: jnp.diag(v.reshape((d,d))).sum())(mcmc.get_samples())
-        self.assertGreater(stats.ks_1samp(traces, stats.norm.cdf).pvalue, 0.01)
+                # ks test for normality of traces of the matrices
+                traces = jax.vmap(
+                    lambda v: jnp.diag(v.reshape((d,d))).sum()
+                )(mcmc.get_samples())
+                self.assertGreater(
+                    stats.ks_1samp(traces, stats.norm.cdf).pvalue, 0.01
+                )
 
     def test_constrained_vectorized(self):
         # params
@@ -410,6 +422,68 @@ class TestConstrained(unittest.TestCase):
         self.assertTrue(
             jnp.allclose(hist[0], angles.size/10, rtol=0.15)
         )
+
+    def test_mrna(self):
+        def prior_potential(x):
+            assert x.shape == (4,)
+            lt0, lkm0, lbeta, ldelta = x
+            ok = jnp.logical_and(lt0 > -2, lt0 < 1)
+            ok = jnp.logical_and(ok, jnp.logical_and(lkm0 > -5, lkm0 < 5))
+            ok = jnp.logical_and(ok, jnp.logical_and(lbeta > -5, lbeta < 5))
+            ok = jnp.logical_and(ok, jnp.logical_and(ldelta > -5, ldelta < 5))
+            return jnp.where(ok, 0, jnp.inf)
+
+        def ode_solution(km0, beta, delta, dt):
+            abs_diff = jnp.abs(delta-beta)
+            exp_prod = jnp.exp(-jnp.minimum(delta,beta)*dt)*jnp.expm1(-abs_diff*dt)
+            return -(km0/abs_diff)*exp_prod
+
+        def make_fwd_model(measured_times):
+            assert len(measured_times) < 4
+            def fwd_model(x):
+                assert x.shape == (4,)
+                t0, km0, beta, delta = 10**x
+                rel_ts = jax.nn.relu(measured_times - t0)
+                return ode_solution(km0, beta, delta, rel_ts)
+
+            return fwd_model
+
+        # define settings
+        rng_key = jax.random.key(6)
+        n_rounds = 14
+        thinning = 2**4
+        n_warm, n_keep = utils.split_n_rounds(n_rounds)
+        measured_times = jnp.array((4.0,8.0,16.0))
+        fwd_model = make_fwd_model(measured_times)
+
+        # simulate an observation by using a given point in input space
+        true_lambda = jnp.array(
+            [0.18858075,  1.1060505, -2.875724, -0.7061024]
+        )
+        init_obs_output = fwd_model(true_lambda)
+
+        # define initial parameters and sampler
+        rng_key, init_key, mcmc_key = jax.random.split(rng_key,3)
+        init_params = jax.random.uniform(init_key,(4,),minval=-1)
+        levelset_finder_settings=(
+            optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS['NADAMW'].copy()
+        )
+        levelset_finder_settings['n_iter'] = 2**12
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=prior_potential,
+            fwd_model=fwd_model,
+            init_obs_output=init_obs_output,
+            levelset_finder_settings=levelset_finder_settings
+        )
+        mcmc = MCMC(
+            kernel,
+            num_warmup=n_warm,
+            num_samples=n_keep,
+            thinning=thinning,
+            progress_bar=False
+        )
+        mcmc.run(mcmc_key, init_params=init_params)
+        assert True
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from typing import NamedTuple, Callable, Any
+from typing import NamedTuple, Callable, Any, Optional
 
 import jax
 from jax.typing import ArrayLike
@@ -7,6 +7,10 @@ from jax import flatten_util, random, numpy as jnp
 
 from automcmc import utils, autostep, preconditioning, optimization
 from automcmc.automcmc import AutoMCMCState
+from automcmc.preconditioning import (
+    Preconditioner,
+    IdentityDiagonalPreconditioner
+)
 
 DEBUG_CONSTRAINED_SAMPLING = False
 
@@ -233,19 +237,69 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def __init__(
             self,
             *args,
-            preconditioner=preconditioning.IdentityDiagonalPreconditioner(), # we need rotational symmetry
-            constraint_fn=None,
-            fwd_model=None,
-            init_obs_output=None,
-            levelset_handler = LevelSetHandlerQR(),
-            solver_options = {},
-            x_tols = {},
-            levelset_finder_settings = None,
+            preconditioner: Preconditioner = IdentityDiagonalPreconditioner(), # we need rotational symmetry
+            constraint_fn: Optional[Callable[[ArrayLike], jax.Array]] = None,
+            fwd_model: Optional[Callable[[ArrayLike], jax.Array]] = None,
+            init_obs_output: Optional[ArrayLike] = None,
+            levelset_handler: LevelSetHandler = LevelSetHandlerQR(),
+            solver_options: dict = {},
+            x_tols: dict = {},
+            levelset_finder_settings: Optional[bool | dict] = None,
             **kwargs
-        ):
+        ) -> None:
+        """Instantiate an :class:`AutoConstrainedRWMH` sampler.
+
+        :param args: Passed to the :class:`AutoStep` constructor.
+        :param Preconditioner preconditioner: only allows instances of class
+            :class:`IdentityDiagonalPreconditioner`.
+        :param Optional[Callable[[ArrayLike], jax.Array]] constraint_fn: user
+            provided function to constrain the sampler to the function's zero
+            levelset. This is equivalent to providing the same function as
+            `fwd_model` and additionally passing `init_obs_output=0`.
+        :param Optional[Callable[[ArrayLike], jax.Array]] fwd_model: constrain
+            the sampler to a levelset of this function, parametrized via the
+            `init_obs_output` argument.
+        :param Optional[ArrayLike] init_obs_output: output of `fwd_model` on
+            whose levelset we wish to constain the sampler. Under NumPyro's
+            vectorized sampling, it is possible to batch `num_chains` different
+            output values in order to simultaneously sample multiple levelsets.
+        :param LevelSetHandler levelset_handler: defines the method to project
+            velocities to tangent spaces along the level set. Defaults to the
+            QR-based approach described in [1] (:class:`LevelSetHandlerQR`). In
+            high-dimensional settings, it may be beneficial to switch to the
+            approach suggested in [2], based on the Cholesky decomposition
+            (:class:`LevelSetHandlerCholesky`), at the cost of less robustness
+            to high curvature models.
+        :param dict solver_options: passed to :func:`utils.newton`. Default
+            values are established based on the float type of the arguments and
+            the dimension.
+        :param dict x_tols: optional `dict` with `atol` and `rtol` values used
+            to detect difference in ambient space during reversibility check.
+            Default values are established based on the float type of the
+            arguments and the dimension.
+        :param Optional[bool | dict] levelset_finder_settings: if truthy,
+            an initial robust gradient descent (NADAMW) phase is employed to
+            find the desired level set. This is useful when the initial
+            parameters are far from the level set, since the Newton solver
+            struggles in this setting. Defaults to `None`; i.e., not used.
+            For additional control, the user may pass a `dict` with the same
+            structure as
+            `automcmc.optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS['NADAMW']`.
+        :param kwargs: Passed to the :class:`AutoStep` constructor.
+
+
+        .. rubric:: References
+
+        [1] Zappa, E., Holmes-Cerfon, M. & Goodman, J. (2018).
+        Monte Carlo on manifolds: Sampling densities and integrating functions.
+        *Comm. Pure Appl. Math.*, 71, 2609-2647.
+
+        [2] Xu, K., & Holmes-Cerfon, M. (2024). Monte Carlo on manifolds in high
+        dimensions. *Journal of Computational Physics*, 506, 112939.
+        """
         super().__init__(*args,preconditioner=preconditioner,**kwargs)
         assert isinstance(
-            self.preconditioner, preconditioning.IdentityDiagonalPreconditioner
+            self.preconditioner, IdentityDiagonalPreconditioner
         ), "This method is justified only for `IdentityDiagonalPreconditioner`" \
           f" but I got instead {type(self.preconditioner)}"
 
