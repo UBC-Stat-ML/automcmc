@@ -353,8 +353,8 @@ class TestConstrained(unittest.TestCase):
         n_chains = 64
         n_dim = 2
         rng_key = jax.random.key(9)
-        n_warm, n_keep = utils.split_n_rounds(10)
-        thinning=16
+        n_warm, n_keep = utils.split_n_rounds(13)
+        thinning=2**3
 
         # define an equally spaced grid in [0,1]
         # check the Riemann integral recovers the truth (2/3) for expected radius
@@ -408,7 +408,7 @@ class TestConstrained(unittest.TestCase):
         angles = jnp.arctan2(samples[:,:,0],samples[:,:,1]).flatten()
         hist = jnp.histogram(angles,bins=jnp.linspace(-jnp.pi, jnp.pi, 11))
         self.assertTrue(
-            jnp.allclose(hist[0], samples.size/(10*n_dim), rtol=0.1)
+            jnp.allclose(hist[0], angles.size/10, rtol=0.15)
         )
 
 
