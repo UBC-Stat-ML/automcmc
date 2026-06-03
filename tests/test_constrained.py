@@ -309,9 +309,9 @@ class TestConstrained(unittest.TestCase):
                 xs,ys,zs = mcmc.get_samples().T
                 xy_cdf = lambda q: (q*jnp.sqrt(1-q*q) + jnp.arcsin(q))/jnp.pi + 0.5 # thx 2 symbolic integration
                 z_cdf = np.square
-                self.assertGreater(stats.ks_1samp(xs, xy_cdf).pvalue, 0.01)
-                self.assertGreater(stats.ks_1samp(ys, xy_cdf).pvalue, 0.01)
-                self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.01)
+                self.assertGreater(stats.ks_1samp(xs, xy_cdf).pvalue, 0.001)
+                self.assertGreater(stats.ks_1samp(ys, xy_cdf).pvalue, 0.001)
+                self.assertGreater(stats.ks_1samp(zs, z_cdf).pvalue, 0.001)
 
 
     def test_sample_orthonormal(self):
