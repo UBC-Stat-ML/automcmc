@@ -79,8 +79,10 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
 
     def reversibility_check(
             self,
-            fwd_exponent: int,
-            bwd_exponent: int,
+            fwd_exponent: ArrayLike,
+            bwd_exponent: ArrayLike,
+            fwd_step_size: ArrayLike,
+            bwd_step_size: ArrayLike,
             initial_state: AutoMCMCState,
             proposed_state: AutoMCMCState,
             roundtrip_state: Optional[AutoMCMCState]
@@ -92,6 +94,8 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
 
         :param fwd_exponent: Forward exponent.
         :param bwd_exponent: Backward exponent.
+        :param fwd_step_size: Forward step size.
+        :param bwd_step_size: Backward step size.
         :param initial_state: Initial sampler state.
         :param proposed_state: Proposed state.
         :param roundtrip_state: Roundtrip state.
@@ -179,6 +183,8 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         reversibility_passed = self.reversibility_check(
             fwd_exponent,
             bwd_exponent,
+            fwd_step_size,
+            bwd_step_size,
             state,
             proposed_state,
             self.maybe_build_roundtrip_state(

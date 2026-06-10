@@ -468,7 +468,7 @@ class TestConstrained(unittest.TestCase):
         levelset_finder_settings=(
             optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS['NADAMW'].copy()
         )
-        levelset_finder_settings['n_iter'] = 2**12
+        levelset_finder_settings['n_iter'] = 2**11
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn=prior_potential,
             fwd_model=fwd_model,
