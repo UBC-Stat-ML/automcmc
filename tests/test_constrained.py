@@ -44,6 +44,17 @@ class TestConstrained(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "Cannot find feasible"):
             kernel.init(jax.random.key(1), 0, init_params, (), {})
 
+        # check non full rank jacobian is caught
+        init_params = jnp.array([1.0,0.0,0.0])
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn=pot,
+            fwd_model=lambda x: jnp.stack(2*(jnp.linalg.norm(x),)),
+            init_obs_output=jnp.array([1.,1.]), # not in range of fwd mod
+        )
+        with self.assertRaisesRegex(AssertionError, "The Jacobian may not be"):
+            kernel.init(jax.random.key(1), 0, init_params, (), {})
+
+
     def test_proj_normal_tangent(self):
         d = 3
         n = d*d
