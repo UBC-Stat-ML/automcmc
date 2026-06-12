@@ -61,8 +61,9 @@ class LevelSetHandler(metaclass=ABCMeta):
         fwd_model: Callable[[ArrayLike], jax.Array],
         obs_output: ArrayLike,
         x_base: ArrayLike,
-        tol: ArrayLike
-    ) -> LevelSetState:
+        tol: ArrayLike,
+        check_rank: bool = False
+    ) -> LevelSetState | tuple:
         """
         Build :class:`LevelSetState` from a forward model function and an
         observed output.
@@ -71,7 +72,11 @@ class LevelSetHandler(metaclass=ABCMeta):
         :param obs_output: an observed output of the forward model.
         :param x_base: base point; see :class:`LevelSetState`.
         :param tol: tolerance for constraint satisfiability.
-        :return: a :class:`LevelSetState` corresponding to `x_base`.
+        :param check_rank: should we check the Jacobian is full row rank?
+            Defaults to `False`.
+        :return: a :class:`LevelSetState` corresponding to `x_base`. If
+            `check_rank`, additionally output a flag which is `True` when the
+            Jacobian is full rank.
         """
         pass
 
@@ -133,16 +138,21 @@ class LevelSetHandlerCholesky(LevelSetHandler):
             fwd_model: Callable[[ArrayLike], jax.Array],
             obs_output: ArrayLike,
             x_base: ArrayLike,
-            tol: ArrayLike
+            tol: ArrayLike,
+            check_rank: bool = False
         ) -> LevelSetState:
         J, is_satisfied = self.get_jacobian_and_check_output(
             fwd_model, obs_output, x_base, tol
         )
         chol = jax.lax.linalg.cholesky(jnp.inner(J,J))
         log_abs_det = -jnp.log(jnp.abs(jnp.diag(chol))).sum()
-        return LevelSetState(
+        lss = LevelSetState(
             x_base, obs_output, is_satisfied, log_abs_det, chol
         )
+        if check_rank:
+            return lss, jnp.linalg.matrix_rank(chol) == chol.shape[-1]
+        else:
+            return lss
 
     # project onto normal (N) space
     #   P[N]v = J^T(JJ^T)^{-1}Jv
@@ -188,16 +198,20 @@ class LevelSetHandlerQR(LevelSetHandler):
             fwd_model: Callable[[ArrayLike], jax.Array],
             obs_output: ArrayLike,
             x_base: ArrayLike,
-            tol: ArrayLike
+            tol: ArrayLike,
+            check_rank: bool = False
         ) -> LevelSetState:
         J, is_satisfied = self.get_jacobian_and_check_output(
             fwd_model, obs_output, x_base, tol
         )
         Q,R = jnp.linalg.qr(J.T)
         log_abs_det = -jnp.log(jnp.abs(jnp.diag(R))).sum()
-        return LevelSetState(
-            x_base, obs_output, is_satisfied, log_abs_det, Q
-        )
+        lss = LevelSetState(x_base, obs_output, is_satisfied, log_abs_det, Q)
+        if check_rank:
+            return lss, jnp.linalg.matrix_rank(R) == R.shape[-1]
+        else:
+            return lss
+
 
     # project onto normal (N) space
     #   P[N]v = J^T(JJ^T)^{-1}Jv
@@ -334,7 +348,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def proj_level_set(
             self,
             x_flat: ArrayLike,
-            lss: LevelSetState
+            lss: LevelSetState,
+            check_rank: bool = False
         ) -> tuple[Any, ...]:
         """
         Project a point on the level set determined by a
@@ -343,6 +358,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         :param ArrayLike x_flat: a vector.
         :param LevelSetState lss: determines the level set that is being
             targeted.
+        :param bool check_rank: should the rank of the Jacobian be checked?
+            Defaults to `False`.
         :return tuple[Any, ...]: projected vector, updated
             :class:`LevelSetState`, and solver diagnostics.
         """
@@ -358,13 +375,18 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         x_flat += f_vjp(z)[0]
 
         # update the constraint state and return
-        lss = self.levelset_handler.make_levelset_state(
+        out = self.levelset_handler.make_levelset_state(
             self.fwd_model,
             lss.obs_output,
             x_flat,
-            self.solver_options['tol']
+            self.solver_options['tol'],
+            check_rank = check_rank
         )
-        return (x_flat, lss, diagnostics)
+
+        if check_rank:
+            return (x_flat, *out, diagnostics)
+        else:
+            return (x_flat, out, diagnostics)
 
     # preliminary pass with gradient descent on least-squares loss to get close to
     # levelset, as Newton fails when initialized too far away
@@ -417,9 +439,13 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             self.solver_options['tol']
         )
 
-        # project to zero level set
-        x_flat, lss, diagnostics = self.proj_level_set(x_flat, lss)
-        return unravel_fn(x_flat), lss, diagnostics
+        # project to zero level set and check the rank of the Jacobian
+        x_flat, lss, full_rank, diagnostics = self.proj_level_set(
+            x_flat, lss, check_rank=True
+        )
+
+        # unravel and return
+        return unravel_fn(x_flat), lss, full_rank, diagnostics
 
 
     # TODO: extract `fwd_model` for numpyro models (via a deterministic
@@ -427,7 +453,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     def init_extras(self, state):
         rng_key_shape = jnp.shape(state.rng_key)
         if rng_key_shape == ():
-            x, lss, diagnostics = self.init_lss_and_project(
+            x, lss, full_rank, diagnostics = self.init_lss_and_project(
                 state.x, self.init_obs_output
             )
         else:
@@ -436,12 +462,20 @@ class AutoConstrainedRWMH(autostep.AutoStep):
                 rng_key_shape[0] == self.init_obs_output.shape[0]
             ), "`init_obs_output` must have a leading dimension equal to " \
                f"the number of chains requested ({rng_key_shape[0]})"
-            x, lss, diagnostics = jax.vmap(self.init_lss_and_project)(
+            vmap_fn = jax.vmap(self.init_lss_and_project)
+            x, lss, full_rank, diagnostics = vmap_fn(
                 state.x, self.init_obs_output
             )
 
+        # check we found valid initial points
         assert jnp.all(lss.is_satisfied), \
             f"Cannot find feasible starting point. Solver output:\n{diagnostics}"
+
+        # check that Jacobian has full row rank at initial points
+        assert jnp.all(full_rank), (
+            "The Jacobian may not be full rank at (some of) the initial "
+            f"points.\nFull rank? = {full_rank}"
+        )
 
         # return updated state
         return state._replace(x = x, idiosyncratic = lss)
