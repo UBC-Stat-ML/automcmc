@@ -33,10 +33,10 @@ class AutoPCN(autostep.AutoStep):
        the sign to the state space of the underlying sampler (with `Unif{-1,1}`
        measure), while the abs value is handled as the autostep parameter.
 
-       Note that we could randomize the sign inside :meth:`refresh_aux_vars`,
-       but this does not seem useful. Also, the kinetic energy is unaffected
-       because the sign is invariant under the involution; and even if it
-       weren't, its target measure is uniform.
+       Note we randomize the sign inside :meth:`refresh_aux_vars` along with
+       the proposal point. Note that the kinetic energy is unaffected because
+       the sign is invariant under the involution (and even if it weren't, its
+       target measure is uniform).
 
     .. warning:: This class is still under development.
 
@@ -85,12 +85,15 @@ class AutoPCN(autostep.AutoStep):
 
     # sample p ~ N(m,S), where m and S are the approx posterior mean and
     # covariance, respectively. Equivalent to v~N(0,I) and p = m + Lv, with
-    # LL^T = S. Thus, we instead draw v and store it in `p_flat`
-    # Note: the sign of the angle (which is technically part of the state of
-    # the underlying involutive sampler) is not refreshed.
+    # LL^T = S. Thus, we instead draw v and store it in `p_flat`. Also resample
+    # sign for the angle
     def refresh_aux_vars(self, rng_key, state, precond_state):
-        v_flat = random.normal(rng_key, jnp.shape(state.p_flat))
-        return state._replace(p_flat = v_flat)
+        v_key, sign_key = random.split(rng_key)
+        v_flat = random.normal(v_key, jnp.shape(state.p_flat))
+        sign = random.choice(
+            sign_key, jnp.array((-1,1), dtype=state.idiosyncratic.dtype)
+        )
+        return state._replace(p_flat = v_flat, idiosyncratic=sign)
 
     # pCN as joint elliptical rotation (along circle in standardized space)
     # with final angle sign flip

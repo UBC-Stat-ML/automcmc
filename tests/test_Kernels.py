@@ -27,29 +27,6 @@ def loop_sample(kernel, n_refresh, kernel_state):
         length=n_refresh
     )[0]
 
-# tune a sampler starting from an iid sample from the target
-def init_and_tune_kernel(
-        sampler,
-        kernel,
-        n_warmup,
-        rng_key
-    ):
-    run_key, init_key = random.split(rng_key)
-
-    # draw an iid sample from the target
-    init_val = sampler(init_key)
-
-    # initialize a kernel state with warmup to tune parameters
-    # note: num_samples = 0 fails.
-    mcmc = MCMC(kernel, num_warmup=n_warmup, num_samples=1, progress_bar=False)
-    mcmc.run(run_key, init_params=init_val)
-    kernel_state = mcmc.last_state
-
-    # reset the initial state to the sample from the target
-    kernel_state = kernel_state._replace(x=init_val)
-    return kernel, kernel_state
-
-
 class TestKernels(unittest.TestCase):
 
     TESTED_KERNELS = (

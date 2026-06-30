@@ -513,26 +513,14 @@ class AutoConstrainedRWMH(autostep.AutoStep):
 
     def reversibility_check(
             self,
-            fwd_exponent: ArrayLike,
-            bwd_exponent: ArrayLike,
-            fwd_step_size: ArrayLike,
-            bwd_step_size: ArrayLike,
             initial_state: AutoMCMCState,
             proposed_state: AutoMCMCState,
             roundtrip_state: AutoMCMCState
         ) -> bool:
-        # std autostep check of exponents
-        passed = fwd_exponent == bwd_exponent
-        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
-            "exponents match: {}", passed, ordered=True
-        )
-
         # check proposed state is feasible
-        passed = jnp.logical_and(
-            passed, proposed_state.idiosyncratic.is_satisfied
-        )
+        passed = proposed_state.idiosyncratic.is_satisfied
         DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
-            "and prop state is feasible: {}", passed, ordered=True
+            "Prop state is feasible: {}", passed, ordered=True
         )
 
         # check roundtrip state is feasible
@@ -555,23 +543,12 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             "and rt state is close to init: {}", passed, ordered=True
         )
 
-        # check init and rt velocities values are close
-        # This check is not mentioned in the papers, but it is required by the
-        # autostep framework since the relevant involution acts on both x and v
-        # It may be possible to show that x_rt == x_init implies the velocities
-        # match, but it's not straightforward...
-        # Note: need to scale by step size, as this is the actual vector used
-        # in the involution (otherwise we get a lot of false positives)
-        passed = jnp.logical_and(
-            passed,
-            self.close_in_ambient_space(
-                fwd_step_size * initial_state.p_flat,
-                bwd_step_size * roundtrip_state.p_flat
-            )
-        )
-        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
-            "and rt vel is close to init: {}", passed, ordered=True
-        )
+        # note: in theory, we should also check that the initial and roundtrip
+        # velocities match (involution is in (x,v) space). However, note that
+        #   v0 = P[T_x](y-x), v0' = P[T_{x'}](y-x')  (P[T_x]: project to T_x)
+        # so if x=x', then v0=v0'. Hence, if we declare that x=x' (up to tol),
+        # then necessarily we must declare v0=v0' (and any other deterministic
+        # function of (x,y)), even if this is not true up to tol
 
         # if debugging, print all three states
         DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
