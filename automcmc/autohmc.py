@@ -49,12 +49,10 @@ class AutoHMC(autostep.AutoStep):
         p_flat = U @ v_flat if jnp.ndim(U) == 2 else U * v_flat
         return state._replace(p_flat = p_flat)
 
-    def involution_main(self, step_size, state, precond_state):
-        return self.integrator(
+    def involution(self, step_size, state, precond_state):
+        state = self.integrator(
             step_size, state, precond_state, self.n_leapfrog_steps
         )
-
-    def involution_aux(self, state):
         return state._replace(p_flat = -state.p_flat)
 
 

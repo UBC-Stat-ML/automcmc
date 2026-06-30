@@ -7,6 +7,8 @@ import jax.numpy as jnp
 
 from automcmc import utils
 
+DEBUG_EXECUTOR = False
+
 def _draw_log_unif_bounds(rng_key):
     return lax.sort(random.exponential(rng_key, (2,)) * (-1))
 
@@ -79,6 +81,7 @@ class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
         difference `log_diff`.
 
         :param parameters: selector parameters.
+        :param log_diff: log joint difference.
         :return: `True` if step size should grow; `False` otherwise.
         """
         pass
@@ -91,12 +94,163 @@ class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
         difference `log_diff`.
 
         :param parameters: selector parameters.
+        :param log_diff: log joint difference.
         :return: `True` if step size should shrink; `False` otherwise.
         """
         pass
 
+    def direction(self, parameters, log_diff):
+        """
+        Compute direction of movement for the step size exponent.
+
+        :param parameters: selector parameters.
+        :param log_diff: log joint difference.
+        :return: `+1` for growing, `-1` for shrinking, and `0` otherwise.
+        """
+        return (
+            1*self.should_grow(parameters, log_diff) -
+            1*self.should_shrink(parameters, log_diff)
+        )
+
     def gen_executor(self, kernel):
-        return gen_target_acc_prob_executor(kernel)
+        """
+        Generates a function that implements the logic for automatically
+        selecting a step size by bracketing the acceptance probability, as
+        described in Algorithm 2 of Biron-Lattes et al. (2024) and
+        Liu et al. (2025).
+
+        :param kernel: An instance of :class:`autostep.AutoStep`.
+        :return: A function.
+        """
+        assert self is kernel.selector # sanity check
+
+        def loop_body(carry):
+            (
+                # the following three dont change inside the loop
+                state,
+                selector_params,
+                precond_state,
+                # these do change
+                exponent,
+                direction,
+                _, # keep_going
+            ) = carry
+
+            # update exponent and step size
+            # note: in the first iteration exponent=direction=0, so this yields
+            # the base step size
+            exponent += direction
+            step_size = kernel.step_size(state.base_step_size, exponent)
+
+            # involution + update log joint density
+            next_state = kernel.update_log_joint(
+                kernel.involution(step_size, state, precond_state),
+                precond_state
+            )
+
+            # roundtrip involution, no need to update log joint
+            roundtrip_state = kernel.involution(
+                step_size, next_state, precond_state
+            )
+
+            # check reversibility of the underlying involution
+            # if it failed, set next log joint diff to -inf
+            reversibility_passed = kernel.reversibility_check(
+                state,
+                next_state,
+                roundtrip_state
+            )
+            next_log_joint_diff = jnp.where(
+                reversibility_passed,
+                # `numerically_safe_diff` is used to avoid corner cases where
+                # the step size is 0 already but, because of floating point
+                # arithmetic, the log joint at this fictituous "next" point is
+                # exactly equal to the next float of `init_log_joint`
+                utils.numerically_safe_diff(
+                    state.log_joint, next_state.log_joint
+                ),
+                -jnp.inf
+            )
+
+            # compute new direction of movement for the exponent
+            # set actual direction only in first pass
+            new_direction = self.direction(selector_params, next_log_joint_diff)
+            direction = jnp.where(exponent==0, new_direction, direction)
+
+            # check termination
+            keep_going = jnp.logical_and(
+                # still within budget of iterations
+                jnp.abs(exponent) < self.max_n_iter,
+                jnp.logical_and(
+                    # we decided to change the exponent in the first iteration
+                    jnp.logical_or(exponent > 0, jnp.abs(direction) > 0),
+                    # we can only keep going in the original direction
+                    jnp.logical_or(exponent == 0, new_direction == direction)
+                )
+            )
+
+            # maybe print debug info
+            if DEBUG_EXECUTOR:
+                jax.debug.print(
+                    "dir: {d: d}: base: {bs:.2e} + exp: {e:>2} = ss: {s:.2e} "
+                    "| (L0, L1, DL, NDL): ({l0: .2e},{l1: .2e},{dl: .2e},"
+                    "{ndl: .2e}) | bounds: ({a: .2e},{b: .2e})",
+                    ordered=True,
+                    d=direction,
+                    bs=state.base_step_size,
+                    e=exponent,
+                    s=step_size,
+                    l0=state.log_joint,
+                    l1=next_state.log_joint,
+                    dl=next_state.log_joint-state.log_joint,
+                    ndl=next_log_joint_diff,
+                    a=selector_params[0],
+                    b=selector_params[1]
+                )
+
+            # return updated carry
+            return (
+                state,
+                selector_params,
+                precond_state,
+                exponent,
+                direction,
+                keep_going
+            )
+
+        # TODO: can we spit out `next_state` too so that we don't have to
+        # recompute it in a way that doesn't involve too much memory? We would
+        # need to handle the fact that growing requires backtracking, but not
+        # shrinking.
+        # TODO: right now, `state` is never updated because we don't have stats
+        # that change during the loop. If we reactivate the counter for target
+        # evaluations, this needs to change
+        def auto_step_size_fn(state, selector_params, precond_state):
+            # run the loop, with first iteration corresponding to exponent=0
+            # (i.e., base step size), where the direction of improvement is
+            # decided (+1,-1).
+            exponent = jax.lax.while_loop(
+                lambda carry: carry[-1], # itemgetter(-1) does not work (`TypeError: cannot create weak reference to 'operator.itemgetter' object`),
+                loop_body,
+                (state, selector_params, precond_state, 0, 0, True)
+            )[3]
+
+            # deduct 1 step to avoid cliffs when increasing exponent, but only
+            # if we didn't go over the max number of iterations (so that no
+            # cliff was actually seen)
+            # Note: this adjustment is necessary not only for the correctness
+            # of AsymmetricSelectors, but also because more complicated
+            # involutions (HMC with many steps, constrained mcmc) actually face
+            # cliffs (think divergences with HMC)
+            exponent = jnp.where(
+                jnp.logical_and(exponent > 0, exponent < self.max_n_iter),
+                exponent-1,
+                exponent
+            )
+
+            return state, exponent
+
+        return auto_step_size_fn
 
 
 class AsymmetricSelector(AcceptProbBracketingSelector):
@@ -199,283 +353,99 @@ class MaxEJDSelector(StepSizeSelector):
     def __init__(self, *args, **kwargs):
         pass
 
+    # TODO: try to simplify this code
     def gen_executor(self, kernel):
-        return gen_max_ejd_executor(kernel)
 
-###############################################################################
-# executors
-###############################################################################
-
-def copy_state_extras(source, dest):
-    return dest._replace(stats = source.stats, rng_key = source.rng_key)
-
-DEBUG_EXECUTOR = False
-
-#######################################
-# acceptance probability bracketing
-#######################################
-
-def gen_alter_step_size_cond_fun(pred_fun, max_n_iter):
-    def alter_step_size_cond_fun(args):
-        (
-            state,
-            exponent,
-            next_log_joint,
-            init_log_joint,
-            selector_params,
-            precond_state
-        ) = args
-
-        # `numerically_safe_diff` is used to avoid corner cases where the step
-        # size is 0 already but, because of extreme nonlinearities, the
-        # potential at this fictituous "next" point gives a log_joint that is
-        # exactly equal to the next float of `init_log_joint`
-        log_diff = utils.numerically_safe_diff(init_log_joint,next_log_joint)
-        decision = jnp.logical_and(
-            lax.abs(exponent) < max_n_iter,     # bail if max number of iterations reached
-            pred_fun(selector_params, log_diff)
-        )
-
-        return decision
-    return alter_step_size_cond_fun
-
-def gen_alter_step_size_body_fun(kernel, direction):
-    def alter_step_size_body_fun(args):
-        (
-            state,
-            exponent,
-            next_log_joint,
-            init_log_joint,
-            selector_params,
-            precond_state
-        ) = args
-        exponent = exponent + direction
-        eps = kernel.step_size(state.base_step_size, exponent)
-        next_state = kernel.update_log_joint(
-            kernel.involution_main(eps, state, precond_state),
-            precond_state
-        )
-        next_log_joint = next_state.log_joint
-        state = copy_state_extras(next_state, state)
-
-        # maybe print debug info
-        if DEBUG_EXECUTOR:
-            jax.debug.print(
-                "dir: {d: d}: base: {bs:.8f} + exp: {e: d} = eps: {s:.8f} | (L0, L1, DL, NDL): ({l0: .2f},{l1: .2f},{dl: .2f},{ndl: .2f}) | bounds: ({a:.3f},{b:.3f})",
-                ordered=True,
-                d=direction,
-                bs=state.base_step_size,
-                e=exponent,
-                s=eps,
-                l0=init_log_joint,
-                l1=next_log_joint,
-                dl=next_log_joint-init_log_joint,
-                ndl=utils.numerically_safe_diff(init_log_joint,next_log_joint),
-                a=selector_params[0],
-                b=selector_params[1]
+        def expected_jump_dist(eps, state, precond_state):
+            # take the step
+            next_state = kernel.update_log_joint(
+                kernel.involution(eps, state, precond_state),
+                precond_state
             )
-            # jax.debug.print(
-            #     "{v} | {c} | {i}",
-            #     v=precond_state.var,
-            #     c=precond_state.var_tril_factor,
-            #     i=precond_state.inv_var_triu_factor
-            # )
 
-        return (
-            state,
-            exponent,
-            next_log_joint,
-            init_log_joint,
-            selector_params,
-            precond_state
-        )
+            # compute the Mahalanobis distance using the given preconditioner
+            x_flat = jax.flatten_util.ravel_pytree(state.x)[0]
+            next_x_flat = jax.flatten_util.ravel_pytree(next_state.x)[0]
+            dx = next_x_flat - x_flat
+            U = precond_state.inv_var_triu_factor
+            dx_std = U.T @ dx if jnp.ndim(U) == 2 else U * dx
+            dist = jnp.linalg.norm(dx_std)
 
-    return alter_step_size_body_fun
+            # compute min(fwd,bwd) acc prob and return the worst-case EJD
+            log_joint_diff = next_state.log_joint-state.log_joint
+            min_acc_prob = jnp.exp(-jnp.abs(log_joint_diff))
+            return state, min_acc_prob*dist
 
-def gen_target_acc_prob_executor(kernel):
-    """
-    Generates a function that implements the logic for automatically selecting
-    a step size by bracketing the acceptance probability, as described in
-    Algorithm 2 of Biron-Lattes et al. (2024) and Liu et al. (2025).
+        def gen_optim_ejd_funcs(kernel, direction):
+            assert direction == 1 or direction == -1
+            def cond_fn(carry):
+                e, old_ejd, new_ejd, *_ = carry
+                return jnp.logical_and(jnp.sign(e) == direction, new_ejd>old_ejd)
 
-    :param kernel: An instance of :class:`autostep.AutoStep`.
-    :return: A function.
-    """
+            def body_fn(carry):
+                e, _, new_ejd, state, precond_state = carry
+                e = e + direction
+                old_ejd = new_ejd
+                eps = kernel.step_size(state.base_step_size, e)
+                state, new_ejd = expected_jump_dist(eps, state, precond_state)
+                if DEBUG_EXECUTOR:
+                    jax.debug.print(
+                        "e={}, old_ejd={}, new_ejd={}", e, old_ejd, new_ejd, ordered=True
+                    )
+                return (e, old_ejd, new_ejd, state, precond_state)
 
-    selector = kernel.selector
-    shrink_step_size_cond_fun = gen_alter_step_size_cond_fun(
-        selector.should_shrink, selector.max_n_iter
-    )
-    shrink_step_size_body_fun = gen_alter_step_size_body_fun(kernel, -1)
-    grow_step_size_cond_fun = gen_alter_step_size_cond_fun(
-        selector.should_grow, selector.max_n_iter
-    )
-    grow_step_size_body_fun = gen_alter_step_size_body_fun(kernel, 1)
+            return cond_fn, body_fn
 
-    def shrink_step_size(
-            state,
-            selector_params,
-            next_log_joint,
-            init_log_joint,
-            precond_state
-        ):
-        exponent = 0
-        state, exponent, *_ = lax.while_loop(
-            shrink_step_size_cond_fun,
-            shrink_step_size_body_fun,
-            (state, exponent, next_log_joint, init_log_joint,
-                selector_params, precond_state)
-        )
-        return state, exponent
+        inc_cond_fn, inc_body_fn = gen_optim_ejd_funcs(kernel, 1)
+        dec_cond_fn, dec_body_fn = gen_optim_ejd_funcs(kernel, -1)
 
-    def grow_step_size(
-            state,
-            selector_params,
-            next_log_joint,
-            init_log_joint,
-            precond_state
-        ):
-        exponent = 0
-        state, exponent, *_ = lax.while_loop(
-            grow_step_size_cond_fun,
-            grow_step_size_body_fun,
-            (state, exponent, next_log_joint, init_log_joint,
-                selector_params, precond_state)
-        )
+        def auto_step_size_fn(state, _, precond_state):
+            # check EJD for staying put, doubling, and halving
+            base_eps = kernel.step_size(state.base_step_size, 0)
+            state, base_eps_ejd = expected_jump_dist(base_eps, state, precond_state)
+            inc_eps = kernel.step_size(state.base_step_size, 1)
+            state, inc_eps_ejd = expected_jump_dist(inc_eps, state, precond_state)
+            dec_eps = kernel.step_size(state.base_step_size, -1)
+            state, dec_eps_ejd = expected_jump_dist(dec_eps, state, precond_state)
 
-        # deduct 1 step to avoid cliffs, but only if we actually entered the
-        # loop and didn't go over the max number of iterations
-        exponent = jnp.where(
-            jnp.logical_and(exponent > 0, exponent < selector.max_n_iter),
-            exponent-1,
-            exponent
-        )
-        return state, exponent
-
-    def auto_step_size_fn(state, selector_params, precond_state):
-        init_log_joint = state.log_joint # Note: assumes the log joint value is up to date!
-        next_state = kernel.update_log_joint(
-            kernel.involution_main(state.base_step_size, state, precond_state),
-            precond_state
-        )
-        next_log_joint = next_state.log_joint
-        state = copy_state_extras(next_state, state) # update state's stats and rng_key
-
-        # try shrinking (no-op if selector decides not to shrink)
-        # note: we call the output of this `state` because it should equal the
-        # initial state except for extra fields -- stats, rng_key -- which we
-        # want to update
-        state, shrink_exponent = shrink_step_size(
-            state, selector_params, next_log_joint, init_log_joint, precond_state
-        )
-
-        # try growing (no-op if selector decides not to grow)
-        state, grow_exponent = grow_step_size(
-            state, selector_params, next_log_joint, init_log_joint, precond_state
-        )
-
-        # can add the two since one of them must be zero
-        return state, shrink_exponent + grow_exponent
-
-    return auto_step_size_fn
-
-#######################################
-# maximum expected jump distance
-#######################################
-
-def gen_max_ejd_executor(kernel):
-
-    def expected_jump_dist(eps, state, precond_state):
-        # take the step
-        next_state = kernel.update_log_joint(
-            kernel.involution_main(eps, state, precond_state),
-            precond_state
-        )
-
-        # compute the Mahalanobis distance using the given preconditioner
-        x_flat = jax.flatten_util.ravel_pytree(state.x)[0]
-        next_x_flat = jax.flatten_util.ravel_pytree(next_state.x)[0]
-        dx = next_x_flat - x_flat
-        U = precond_state.inv_var_triu_factor
-        dx_std = U.T @ dx if jnp.ndim(U) == 2 else U * dx
-        dist = jnp.linalg.norm(dx_std)
-
-        # compute min(fwd,bwd) acc prob and return the worst-case EJD
-        log_joint_diff = next_state.log_joint-state.log_joint
-        min_acc_prob = jnp.exp(-jnp.abs(log_joint_diff))
-        state = copy_state_extras(next_state, state)
-        return state, min_acc_prob*dist
-
-    def gen_optim_ejd_funcs(kernel, direction):
-        assert direction == 1 or direction == -1
-        def cond_fn(carry):
-            e, old_ejd, new_ejd, *_ = carry
-            return jnp.logical_and(jnp.sign(e) == direction, new_ejd>old_ejd)
-
-        def body_fn(carry):
-            e, _, new_ejd, state, precond_state = carry
-            e = e + direction
-            old_ejd = new_ejd
-            eps = kernel.step_size(state.base_step_size, e)
-            state, new_ejd = expected_jump_dist(eps, state, precond_state)
+            # check which direction gives the best improvement
+            # Note: KEY IMPLEMENTATION DETAIL
+            # argmax defaults to first elem when they are all equal. In particular,
+            # when all(all_ejd==0), the decrease direction is selected. This is
+            # intentional! Doing this allows the algorithm to decrease the step
+            # size since it is clearly too agressive.
+            all_ejd = jnp.array([dec_eps_ejd,base_eps_ejd,inc_eps_ejd])
+            imax = all_ejd.argmax()
+            new_ejd = all_ejd[imax]
+            exponent = jnp.array([-1,0,1])[imax]
             if DEBUG_EXECUTOR:
                 jax.debug.print(
-                    "e={}, old_ejd={}, new_ejd={}", e, old_ejd, new_ejd, ordered=True
+                    "init: base_eps_ejd={}, inc_eps_ejd={}, dec_eps_ejd={}"
+                    " -> e={}", base_eps_ejd, inc_eps_ejd, dec_eps_ejd, exponent,
+                    ordered=True
                 )
-            return (e, old_ejd, new_ejd, state, precond_state)
 
-        return cond_fn, body_fn
-
-    inc_cond_fn, inc_body_fn = gen_optim_ejd_funcs(kernel, 1)
-    dec_cond_fn, dec_body_fn = gen_optim_ejd_funcs(kernel, -1)
-
-    def auto_step_size_fn(state, _, precond_state):
-        # check EJD for staying put, doubling, and halving
-        base_eps = kernel.step_size(state.base_step_size, 0)
-        state, base_eps_ejd = expected_jump_dist(base_eps, state, precond_state)
-        inc_eps = kernel.step_size(state.base_step_size, 1)
-        state, inc_eps_ejd = expected_jump_dist(inc_eps, state, precond_state)
-        dec_eps = kernel.step_size(state.base_step_size, -1)
-        state, dec_eps_ejd = expected_jump_dist(dec_eps, state, precond_state)
-
-        # check which direction gives the best improvement
-        # Note: KEY IMPLEMENTATION DETAIL
-        # argmax defaults to first elem when they are all equal. In particular,
-        # when all(all_ejd==0), the decrease direction is selected. This is
-        # intentional! Doing this allows the algorithm to decrease the step
-        # size since it is clearly too agressive.
-        all_ejd = jnp.array([dec_eps_ejd,base_eps_ejd,inc_eps_ejd])
-        imax = all_ejd.argmax()
-        new_ejd = all_ejd[imax]
-        exponent = jnp.array([-1,0,1])[imax]
-        if DEBUG_EXECUTOR:
-            jax.debug.print(
-                "init: base_eps_ejd={}, inc_eps_ejd={}, dec_eps_ejd={}"
-                " -> e={}", base_eps_ejd, inc_eps_ejd, dec_eps_ejd, exponent,
-                ordered=True
+            # maybe greedily increase if doubling gave the highest EJD
+            # at the end, undo last doubling that caused a marginal decrease in EJD
+            exponent, _, new_ejd, state, precond_state = jax.lax.while_loop(
+                inc_cond_fn,
+                inc_body_fn,
+                (exponent, -1, new_ejd, state, precond_state)
             )
+            exponent = jnp.where(exponent>0,exponent-1,exponent) # old_ejd < 0 so we always enter the loop if exponent>0
 
-        # maybe greedily increase if doubling gave the highest EJD
-        # at the end, undo last doubling that caused a marginal decrease in EJD
-        exponent, _, new_ejd, state, precond_state = jax.lax.while_loop(
-            inc_cond_fn,
-            inc_body_fn,
-            (exponent, -1, new_ejd, state, precond_state)
-        )
-        exponent = jnp.where(exponent>0,exponent-1,exponent) # old_ejd < 0 so we always enter the loop if exponent>0
+            # maybe greedily decrease if halving gave the highest EJD
+            # at the end, undo last halving that caused a marginal decrease in EJD
+            exponent, _, new_ejd, state, precond_state = jax.lax.while_loop(
+                dec_cond_fn,
+                dec_body_fn,
+                (exponent, -1, new_ejd, state, precond_state) # old_ejd < 0 so we always enter the loop if exponent<0
+            )
+            exponent = jnp.where(exponent<0,exponent+1,exponent)
 
-        # maybe greedily decrease if halving gave the highest EJD
-        # at the end, undo last halving that caused a marginal decrease in EJD
-        exponent, _, new_ejd, state, precond_state = jax.lax.while_loop(
-            dec_cond_fn,
-            dec_body_fn,
-            (exponent, -1, new_ejd, state, precond_state) # old_ejd < 0 so we always enter the loop if exponent<0
-        )
-        exponent = jnp.where(exponent<0,exponent+1,exponent)
+            if DEBUG_EXECUTOR:
+                jax.debug.print("final: e={}", exponent, ordered=True)
 
-        if DEBUG_EXECUTOR:
-            jax.debug.print("final: e={}", exponent, ordered=True)
+            return state, exponent
 
-        return state, exponent
-
-    return auto_step_size_fn
+        return auto_step_size_fn
