@@ -13,15 +13,15 @@ class TestAutoPCN(unittest.TestCase):
         S = testutils.make_const_off_diag_corr_mat(3, 0.99)
         L = jax.lax.linalg.cholesky(S)
         U = jax.lax.linalg.triangular_solve(
-            L, 
-            jnp.identity(S.shape[-1]), 
-            transpose_a=True, 
+            L,
+            jnp.identity(S.shape[-1]),
+            transpose_a=True,
             lower=True
         )
         def corr_normal(x):
             x_std = jnp.dot(x, U) # == U.T @ x
             return 0.5*jnp.dot(x_std,x_std)
-        
+
         def std_normal(x):
             return 0.5*jnp.dot(x,x)
 
@@ -55,11 +55,11 @@ class TestAutoPCN(unittest.TestCase):
                 jnp.all(jnp.logical_and(step_sizes>0, step_sizes<jnp.pi))
             )
 
-            # test invariance of the log joint under rotations when target is 
+            # test invariance of the log joint under rotations when target is
             # Gaussian and the preconditioner matches exactly
             def vmap_fn(eps):
                 sn = kernel.update_log_joint(
-                    kernel.involution_main(eps, s, precond_state),
+                    kernel.involution(eps, s, precond_state),
                     precond_state
                 )
                 return jnp.array(
@@ -77,4 +77,3 @@ class TestAutoPCN(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-    

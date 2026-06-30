@@ -7,17 +7,19 @@ from jax import random
 from numpyro.infer import MCMC
 
 from automcmc import autohmc
+from automcmc import autopcn
 from automcmc import autorwmh
 from automcmc import slicer
 from automcmc import preconditioning
 from automcmc import utils
-    
+
 class TestVectorized(unittest.TestCase):
 
     TESTED_KERNELS = (
         autorwmh.AutoRWMH,
         autohmc.AutoMALA,
         autohmc.AutoHMC,
+        autopcn.AutoPCN,
         slicer.DeterministicScanSliceSampler,
         slicer.HitAndRunSliceSampler
     )
@@ -40,11 +42,11 @@ class TestVectorized(unittest.TestCase):
                     rng_key, run_key = random.split(rng_key)
                     kernel = kernel_class(model, preconditioner = prec)
                     mcmc = MCMC(
-                        kernel, 
-                        num_warmup=n_warmup, 
+                        kernel,
+                        num_warmup=n_warmup,
                         num_samples=n_keep,
                         num_chains=n_chains,
-                        chain_method="vectorized", 
+                        chain_method="vectorized",
                         progress_bar=False
                     )
                     mcmc.run(run_key, *model_args, **model_kwargs)
@@ -57,16 +59,16 @@ class TestVectorized(unittest.TestCase):
                 model, preconditioner = prec, optimize_init_params=True
             )
             mcmc = MCMC(
-                kernel, 
-                num_warmup=n_warmup, 
+                kernel,
+                num_warmup=n_warmup,
                 num_samples=n_keep,
                 num_chains=n_chains,
-                chain_method="vectorized", 
+                chain_method="vectorized",
                 progress_bar=False
             )
             mcmc.run(run_key, *model_args, **model_kwargs)
 
-                
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -27,29 +27,6 @@ def loop_sample(kernel, n_refresh, kernel_state):
         length=n_refresh
     )[0]
 
-# tune a sampler starting from an iid sample from the target
-def init_and_tune_kernel(
-        sampler,
-        kernel, 
-        n_warmup,
-        rng_key
-    ):
-    run_key, init_key = random.split(rng_key)
-
-    # draw an iid sample from the target
-    init_val = sampler(init_key)
-
-    # initialize a kernel state with warmup to tune parameters
-    # note: num_samples = 0 fails.
-    mcmc = MCMC(kernel, num_warmup=n_warmup, num_samples=1, progress_bar=False)
-    mcmc.run(run_key, init_params=init_val)
-    kernel_state = mcmc.last_state
-
-    # reset the initial state to the sample from the target 
-    kernel_state = kernel_state._replace(x=init_val)
-    return kernel, kernel_state
-
-    
 class TestKernels(unittest.TestCase):
 
     TESTED_KERNELS = (
@@ -67,12 +44,12 @@ class TestKernels(unittest.TestCase):
     )
 
     TESTED_SELECTORS = (
-        selectors.AsymmetricSelector, 
+        selectors.AsymmetricSelector,
         selectors.SymmetricSelector,
         selectors.DeterministicSymmetricSelector,
         selectors.MaxEJDSelector,
     )
-    
+
     def test_involution(self):
         init_val = jnp.array([1., 2.])
         tol = 1e-3
@@ -98,10 +75,8 @@ class TestKernels(unittest.TestCase):
                         s = mcmc.last_state
                         precond_state = s.base_precond_state
                         step_size = s.base_step_size/2 # avoid dealing with HMC flying off to infty
-                        s_half = kernel.involution_main(step_size, s, precond_state)
-                        s_one = kernel.involution_aux(s_half)
-                        s_onehalf = kernel.involution_main(step_size, s_one, precond_state)
-                        s_two = kernel.involution_aux(s_onehalf)
+                        s_one = kernel.involution(step_size, s, precond_state)
+                        s_two = kernel.involution(step_size, s_one, precond_state)
                         self.assertTrue(
                             jnp.allclose(s_two.x, s.x, atol=tol, rtol=tol),
                             msg=f"s.x={s.x} but s_two.x={s_two.x}"
@@ -118,11 +93,12 @@ class TestKernels(unittest.TestCase):
                             )
 
     # invariance test on multivariate normals
+    # runs independent chains using vectorized MCMC initialized from the target
+    # and checks that the final state is still distributed as target
     def test_invariance(self):
         dim = 4
-        n_warmup = utils.split_n_rounds(10)[0]
-        n_refresh = 1024
-        n_samples = 1024
+        n_warmup, n_refresh = utils.split_n_rounds(10)
+        n_samples = n_refresh
         pval_threshold = 0.001
         rng_key = random.key(2)
         max_n_iters = (1, 2**20)
@@ -131,33 +107,37 @@ class TestKernels(unittest.TestCase):
         S = testutils.make_const_off_diag_corr_mat(dim, 0.8)
         L = jax.lax.linalg.cholesky(S)
         U = jax.lax.linalg.triangular_solve(
-            L, 
-            jnp.identity(S.shape[-1]), 
-            transpose_a=True, 
+            L,
+            jnp.identity(S.shape[-1]),
+            transpose_a=True,
             lower=True
         )
         def corr_target(x):
             x_std = jnp.dot(x, U)
             return 0.5*jnp.dot(x_std, x_std)
 
+        # draw initial values
+        true_means = (2., 0.)
+        true_sds = (jnp.sqrt(0.5), 1.0)
+        rng_key, iso_key, corr_key = jax.random.split(rng_key, 3)
+        init_values = (
+            true_means[0] + true_sds[0]*random.normal(iso_key, (n_samples,dim)),
+            jnp.inner(random.normal(corr_key, (n_samples,dim)), L)
+        )
         targets = (testutils.gaussian_potential, corr_target)
         for i,target in enumerate(targets):
-            if i==0:
-                true_mean, true_var = (2., 0.5)
-                sampler = lambda r: true_mean + true_sd*random.normal(r, dim)
-            else:
-                true_mean, true_var = (0., 1.)
-                sampler = lambda r: L @ random.normal(r, dim)
-
-            true_sd = jnp.sqrt(true_var)
+            true_mean = true_means[i]
+            true_sd = true_sds[i]
+            target = targets[i]
+            init_val = init_values[i]
             for kernel_class in self.TESTED_KERNELS:
                 for prec in self.TESTED_PRECONDITIONERS:
                     for sel in self.TESTED_SELECTORS:
                         if ( # selectors don't make a difference for non-AutoStep samplers
-                            kernel_class is slicer.HitAndRunSliceSampler and 
+                            kernel_class is slicer.HitAndRunSliceSampler and
                             (sel is not selectors.DeterministicSymmetricSelector)
                         ) or ( # AutoPCN only works with the MaxEJD selector
-                            kernel_class is autopcn.AutoPCN and 
+                            kernel_class is autopcn.AutoPCN and
                             sel is not selectors.MaxEJDSelector
                         ):
                             continue
@@ -166,36 +146,43 @@ class TestKernels(unittest.TestCase):
                             if sel is selectors.MaxEJDSelector and max_n_iter != max_n_iters[0]:
                                 continue
                             with self.subTest(
-                                target_id=i, 
-                                kernel_class=kernel_class, 
-                                prec_type=type(prec), 
-                                sel_type=sel, 
+                                target_id=i,
+                                kernel_class=kernel_class,
+                                prec_type=type(prec),
+                                sel_type=sel,
                                 max_n_iter=max_n_iter
                             ):
                                 print(
-                                    f"target={i}, kernel_class={kernel_class} ", 
+                                    f"target={i}, kernel_class={kernel_class} ",
                                     f"prec_type={type(prec)}, sel_type={sel} ",
                                     f"max_n_iter={max_n_iter}"
                                 )
-                                rng_key, exp_key = random.split(rng_key)
-                                def run_fn(init_key):
-                                    kernel = kernel_class(
-                                        potential_fn=target, 
-                                        selector=sel(max_n_iter=max_n_iter),
-                                        preconditioner = prec
-                                    )
-                                    kernel, kernel_state = init_and_tune_kernel(
-                                        sampler,
-                                        kernel,  
-                                        n_warmup,
-                                        init_key
-                                    )
-                                    return loop_sample(
-                                        kernel, n_refresh, kernel_state
-                                    ).x[0]
-                                vmap_fn = jax.vmap(run_fn)
-                                run_keys = random.split(exp_key, n_samples)
-                                mcmc_samples = vmap_fn(run_keys)
+
+                                # initialize a kernel state with warmup to tune parameters
+                                kernel = kernel_class(
+                                    potential_fn=target,
+                                    selector=sel(max_n_iter=max_n_iter),
+                                    preconditioner = prec
+                                )
+                                rng_key, mcmc_key = jax.random.split(rng_key)
+                                mcmc = MCMC(
+                                    kernel,
+                                    num_warmup=n_warmup,
+                                    num_samples=1, # note: num_samples = 0 fails.
+                                    num_chains=n_samples,
+                                    chain_method="vectorized",
+                                    progress_bar=False,
+                                )
+                                mcmc.run(mcmc_key, init_params=init_val)
+
+                                # reset the kernel state to the init val sampled from the target
+                                kernel_state = mcmc.last_state
+                                kernel_state = kernel_state._replace(x=init_val)
+
+                                # refresh the states using mcmc, extract only first dim
+                                mcmc_samples = loop_sample(kernel, n_refresh, kernel_state).x[:,0]
+
+                                # standardize and compute KS test pvalue for the first dim
                                 std_mcmc_samples = (mcmc_samples - true_mean)/true_sd
                                 ks_res = stats.ks_1samp(std_mcmc_samples, stats.norm.cdf)
                                 print(f"pvalue={ks_res.pvalue}")
@@ -225,7 +212,7 @@ class TestKernels(unittest.TestCase):
                     print(f"kernel_class={kernel_class}, sel_type={sel}")
                     rng_key, run_key = random.split(rng_key)
                     kernel = kernel_class(
-                        potential_fn=testutils.gaussian_potential, 
+                        potential_fn=testutils.gaussian_potential,
                         selector=sel()
                     )
                     mcmc = MCMC(kernel, num_warmup=n_warmup, num_samples=n_keep, progress_bar=False)
@@ -250,7 +237,7 @@ class TestKernels(unittest.TestCase):
                         jnp.allclose(sample_sd, true_sd, rtol=tol, atol=tol),
                         msg=f"sample_sd={sample_sd} but true_sd={true_sd}"
                     )
-    
+
 
     def test_numpyro_model(self):
         rng_key = random.key(9)
@@ -274,7 +261,7 @@ class TestKernels(unittest.TestCase):
                         print(f"kernel_class={kernel_class}, prec_type={type(prec)}, sel_type={sel}")
                         rng_key, run_key = random.split(rng_key)
                         kernel = kernel_class(
-                            testutils.toy_unid, 
+                            testutils.toy_unid,
                             selector=sel(),
                             preconditioner = prec
                         )
@@ -286,7 +273,7 @@ class TestKernels(unittest.TestCase):
                         self.assertAlmostEqual(samples["p2"].mean(), 0.71, delta=tol)
                         mean_p_prod = (samples["p1"] * samples["p2"]).mean()
                         self.assertAlmostEqual(mean_p_prod, 0.5, delta=tol)
-                
+
 
 if __name__ == '__main__':
     unittest.main()

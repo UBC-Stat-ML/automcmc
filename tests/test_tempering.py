@@ -23,7 +23,7 @@ class TestTempering(unittest.TestCase):
         slicer.HitAndRunSliceSampler,
         slicer.DeterministicScanSliceSampler
     )
-    
+
     def test_no_nan_at_zero(self):
         p = tempering.tempered_potential_from_logprior_and_loglik(
             jnp.float32(0.2), jnp.float32(jnp.inf), jnp.float32(0)
@@ -41,7 +41,7 @@ class TestTempering(unittest.TestCase):
             kernel, num_warmup=n_warmup, num_samples=n_keep, progress_bar=False
         )
         mcmc.run(rng_key, *model_args, **model_kwargs)
-        
+
         # check the default is using no inv temp
         init_state = mcmc.last_state
         self.assertIsNone(init_state.inv_temp)
@@ -50,9 +50,9 @@ class TestTempering(unittest.TestCase):
         # the inverse temperature of the target
         def vmap_fn(inv_temp):
             state = init_state._replace(inv_temp = inv_temp)
-            state = kernel.involution_main(
-                state.base_step_size, 
-                state, 
+            state = kernel.involution(
+                state.base_step_size,
+                state,
                 state.base_precond_state
             )
             return state.p_flat[0]
@@ -71,12 +71,12 @@ class TestTempering(unittest.TestCase):
             true_mean = inv_temp * model_args[1][0] * true_var
             for kernel_type in self.TESTED_KERNELS:
                 with self.subTest(inv_temp=inv_temp, kernel_type=kernel_type):
-                    rng_key, mcmc_key = random.split(rng_key) 
+                    rng_key, mcmc_key = random.split(rng_key)
                     kernel = kernel_type(model, init_inv_temp=inv_temp)
                     mcmc = MCMC(
-                        kernel, 
-                        num_warmup=n_warmup, 
-                        num_samples=n_keep, 
+                        kernel,
+                        num_warmup=n_warmup,
+                        num_samples=n_keep,
                         progress_bar=False
                     )
                     mcmc.run(mcmc_key, *model_args, **model_kwargs)

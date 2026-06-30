@@ -31,27 +31,13 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         return base_step_size * (2.0 ** exponent)
 
     @abstractmethod
-    def involution_main(self, step_size, state, precond_state):
+    def involution(self, step_size, state, precond_state):
         """
-        Apply the main part of the involution. This is usually the part that
-        modifies the variables of interests.
+        Apply the involution.
 
         :param step_size: Step size to use in the involutive transformation.
         :param state: Current state.
         :param precond_state: Preconditioner state.
-        :return: Updated state.
-        """
-        pass
-
-    @abstractmethod
-    def involution_aux(self, state):
-        """
-        Apply the auxiliary part of the involution. This is usually the part that
-        is not necessary to implement for the respective involutive MCMC algorithm
-        to work correctly (e.g., momentum flip in HMC).
-        Note: it is assumed that the augmented target is invariant to this transformation.
-
-        :param state: Current state.
         :return: Updated state.
         """
         pass
@@ -69,39 +55,23 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         """
         return self._auto_step_size_fn(state, selector_params, precond_state)
 
-    def maybe_build_roundtrip_state(
-            self,
-            bwd_step_size: ArrayLike,
-            proposed_state: AutoMCMCState,
-            precond_state: preconditioning.PreconditionerState
-        ):
-        return None
-
     def reversibility_check(
             self,
-            fwd_exponent: ArrayLike,
-            bwd_exponent: ArrayLike,
-            fwd_step_size: ArrayLike,
-            bwd_step_size: ArrayLike,
             initial_state: AutoMCMCState,
             proposed_state: AutoMCMCState,
             roundtrip_state: Optional[AutoMCMCState]
         ) -> bool:
         """
-        Default reversibility check where only the equality of exponents is
-        assessed. Some samplers may override this to implement more involved
-        checks.
+        Reversibility check for the underlying involution. By default it is
+        assumed that this is always true, but some samplers may override this
+        to implement pseudo-involutions that require this check.
 
-        :param fwd_exponent: Forward exponent.
-        :param bwd_exponent: Backward exponent.
-        :param fwd_step_size: Forward step size.
-        :param bwd_step_size: Backward step size.
         :param initial_state: Initial sampler state.
         :param proposed_state: Proposed state.
         :param roundtrip_state: Roundtrip state.
         :return bool: True if reversibility check passed.
         """
-        return fwd_exponent == bwd_exponent
+        return True
 
     def next_state_accepted(self, args):
         _, proposed_state = args
@@ -111,12 +81,7 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         init_state, proposed_state = args
 
         # keep everything from init_state except for stats (use bwd)
-        # then do the "flip sign" part of the involution to maintain detailed
-        # balance. This has no effect for samplers that fully refresh all the
-        # aux variables but it is necessary for the ones that don't
-        return self.involution_aux(
-            init_state._replace(stats = proposed_state.stats)
-        )
+        return init_state._replace(stats = proposed_state.stats)
 
     def sample_single_chain(self, state, model_args, model_kwargs):
         """
@@ -162,10 +127,11 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         fwd_step_size = self.step_size(state.base_step_size, fwd_exponent)
 
         # apply full involution with fwd step and recompute log joint
+        # TODO: this state was already seen in the loop above, can we cache
+        # it without incurring too much memory increase? Need to deal with
+        # the exponent <- exponent-1 adjustment with grow vs shrink
         proposed_state = self.update_log_joint(
-            self.involution_aux(
-                self.involution_main(fwd_step_size, state, precond_state)
-            ),
+            self.involution(fwd_step_size, state, precond_state),
             precond_state
         )
 
@@ -178,19 +144,11 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
             proposed_state, selector_params, precond_state
         )
         bwd_step_size = self.step_size(state.base_step_size, bwd_exponent)
+        avg_fwd_bwd_step_size = 0.5 * (fwd_step_size + bwd_step_size)
 
-        # check reversibility
-        reversibility_passed = self.reversibility_check(
-            fwd_exponent,
-            bwd_exponent,
-            fwd_step_size,
-            bwd_step_size,
-            state,
-            proposed_state,
-            self.maybe_build_roundtrip_state(
-                bwd_step_size, proposed_state, precond_state
-            )
-        )
+        # check autostep reversibility (failure of the underlying involution is
+        # handled inside `auto_step_size`)
+        reversibility_passed = fwd_exponent == bwd_exponent
 
         # sanitize possible nan in proposed log joint, setting them to -inf
         # this may happen for some too large initial step sizes, which
@@ -215,10 +173,10 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         )
         if selectors.DEBUG_EXECUTOR:
             jax.debug.print(
-                "reversible? {}, acc_prob={}, fwd_step_size={}",
+                "reversible? {}, acc_prob={:.2f}, avg_fwd_bwd_step_size={:.2e}",
                 reversibility_passed,
                 acc_prob,
-                fwd_step_size,
+                avg_fwd_bwd_step_size,
                 ordered=True
             )
 
@@ -231,10 +189,14 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         )
 
         # collect statistics
-        avg_fwd_bwd_step_size = 0.5 * (fwd_step_size + bwd_step_size)
         new_stats = statistics.record_post_sample_stats(
-            next_state.stats, avg_fwd_bwd_step_size, acc_prob, reversibility_passed,
-            jax.flatten_util.ravel_pytree(getattr(next_state, self.sample_field))[0]
+            next_state.stats,
+            avg_fwd_bwd_step_size,
+            acc_prob,
+            reversibility_passed,
+            jax.flatten_util.ravel_pytree(
+                getattr(next_state, self.sample_field)
+            )[0]
         )
         next_state = next_state._replace(stats = new_stats)
 

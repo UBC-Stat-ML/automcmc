@@ -511,38 +511,16 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             x, y, self.x_tols['rtol'], self.x_tols['atol']
         )
 
-    def maybe_build_roundtrip_state(
-            self,
-            bwd_step_size: ArrayLike,
-            prop_state_flip: AutoMCMCState,
-            precond_state: preconditioning.PreconditionerState
-        ):
-        return self.involution_aux(
-            self.involution_main(bwd_step_size, prop_state_flip, precond_state)
-        )
-
     def reversibility_check(
             self,
-            fwd_exponent: ArrayLike,
-            bwd_exponent: ArrayLike,
-            fwd_step_size: ArrayLike,
-            bwd_step_size: ArrayLike,
             initial_state: AutoMCMCState,
             proposed_state: AutoMCMCState,
             roundtrip_state: AutoMCMCState
         ) -> bool:
-        # std autostep check of exponents
-        passed = fwd_exponent == bwd_exponent
-        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
-            "exponents match: {}", passed, ordered=True
-        )
-
         # check proposed state is feasible
-        passed = jnp.logical_and(
-            passed, proposed_state.idiosyncratic.is_satisfied
-        )
+        passed = proposed_state.idiosyncratic.is_satisfied
         DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
-            "and prop state is feasible: {}", passed, ordered=True
+            "Prop state is feasible: {}", passed, ordered=True
         )
 
         # check roundtrip state is feasible
@@ -565,23 +543,12 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             "and rt state is close to init: {}", passed, ordered=True
         )
 
-        # check init and rt velocities values are close
-        # This check is not mentioned in the papers, but it is required by the
-        # autostep framework since the relevant involution acts on both x and v
-        # It may be possible to show that x_rt == x_init implies the velocities
-        # match, but it's not straightforward...
-        # Note: need to scale by step size, as this is the actual vector used
-        # in the involution (otherwise we get a lot of false positives)
-        passed = jnp.logical_and(
-            passed,
-            self.close_in_ambient_space(
-                fwd_step_size * initial_state.p_flat,
-                bwd_step_size * roundtrip_state.p_flat
-            )
-        )
-        DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
-            "and rt vel is close to init: {}", passed, ordered=True
-        )
+        # note: in theory, we should also check that the initial and roundtrip
+        # velocities match (involution is in (x,v) space). However, note that
+        #   v0 = P[T_x](y-x), v0' = P[T_{x'}](y-x')  (P[T_x]: project to T_x)
+        # so if x=x', then v0=v0'. Hence, if we declare that x=x' (up to tol),
+        # then necessarily we must declare v0=v0' (and any other deterministic
+        # function of (x,y)), even if this is not true up to tol
 
         # if debugging, print all three states
         DEBUG_CONSTRAINED_SAMPLING and jax.debug.print(
@@ -594,8 +561,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
 
     # Both position and velocity are affected by this transform
     #   - position is updated by moving along velocity and projecting
-    #   - velocity is updated by projecting the displacement vector
-    def involution_main(self, step_size, state, precond_state):
+    #   - velocity is updated by projecting the displacement vector and then
+    #     flipping the sign
+    def involution(self, step_size, state, precond_state):
         # move outside the level set: x <- x+s*v
         x_flat, unravel_fn = flatten_util.ravel_pytree(state.x)
         v_flat = state.p_flat
@@ -606,24 +574,19 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             x_flat_out, state.idiosyncratic
         )
 
-        # transport the velocity by projecting the displacement vector x'-x
-        # onto the tangent space at the new point
+        # transport the velocity by projecting the flipped displacement vector
+        # x-x' = -(x'-x) onto the tangent space at the new point
         # note: the displacement is on scale step_size * v, so we must divide
         # by the step size to get the right scale
-        v_flat = self.levelset_handler.proj_normal_tangent(
+        flipped_v_flat = self.levelset_handler.proj_normal_tangent(
             self.fwd_model, # Jac[fwd-mod] == Jac[constraint]
             lss,
-            x_flat_new - x_flat
+            x_flat - x_flat_new
         )[-1] / step_size
 
-        # update state and return
+        # flip sign of the velocity, update state and return
         return state._replace(
             x = unravel_fn(x_flat_new),
-            p_flat = v_flat,
+            p_flat = flipped_v_flat,
             idiosyncratic = lss
         )
-
-    # only need to flip sign of the velocity, which was already transported
-    # to the new tangent space in `involution_main`
-    def involution_aux(self, state):
-        return state._replace(p_flat = -state.p_flat)

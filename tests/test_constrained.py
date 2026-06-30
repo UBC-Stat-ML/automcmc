@@ -155,37 +155,35 @@ class TestConstrained(unittest.TestCase):
                     )
 
                     # test involutive property
-                    state_half = kernel.involution_main(
+                    state_one = kernel.involution(
                         step_size, state, precond_state
                     )
-                    self.assertTrue(state_half.idiosyncratic.is_satisfied)
+                    self.assertTrue(state_one.idiosyncratic.is_satisfied)
                     self.assertLess(
-                        utils.newton_fn_value_err(constraint_fn(state_half.x)),
+                        utils.newton_fn_value_err(constraint_fn(state_one.x)),
                         tol
                     )
                     self.assertFalse(kernel.close_in_ambient_space(
-                            state_half.x, state.x
+                            state_one.x, state.x
                     ))
                     self.assertAlmostEqual(
                         # due to nature of this problem, velocities are also
                         # rotating around, and therefore its density (std
                         # normal) should be preserved
-                        kernel.kinetic_energy(state_half, precond_state),
+                        kernel.kinetic_energy(state_one, precond_state),
                         kernel.kinetic_energy(state, precond_state),
                         delta = n_dim*tol
                     )
-                    state_one = kernel.involution_aux(state_half)
-                    state_onehalf = kernel.involution_main(
+                    state_two = kernel.involution(
                         step_size, state_one, precond_state
                     )
-                    self.assertTrue(state_onehalf.idiosyncratic.is_satisfied)
+                    self.assertTrue(state_two.idiosyncratic.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(
-                            constraint_fn(state_onehalf.x)
+                            constraint_fn(state_two.x)
                         ),
                         tol
                     )
-                    state_two = kernel.involution_aux(state_onehalf)
                     self.assertTrue(
                         kernel.close_in_ambient_space(state_two.x, state.x),
                         f"|diff|/|x0| = {jnp.linalg.norm(state_two.x- state.x)/jnp.linalg.norm(state.x)}"

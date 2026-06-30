@@ -6,43 +6,43 @@ from automcmc import autostep, selectors
 
 class AutoPCN(autostep.AutoStep):
     """
-    Involutive implementation of a finite-dimensional preconditioned 
+    Involutive implementation of a finite-dimensional preconditioned
     Crank-Nicolson sampler à la [1]. We do this by identifying the parameter
     of the AR1 proposal as the sine of an angle :math:`\\theta\\in(-\\pi,\\pi)`.
     This allows us to view the pCN proposal as a joint rotation of the position
-    and the Gaussian variable, which is clearly involutive if we tack on an 
-    angle sign flip. Note that this technically increases the set of allowed 
+    and the Gaussian variable, which is clearly involutive if we tack on an
+    angle sign flip. Note that this technically increases the set of allowed
     proposals, as we can access linear combinations of the previous state and
     the Gaussian innovation that have negative coefficients. In this aspect,
     the method resembles the used by the elliptical slice sampler [2].
 
     Another important difference with the approach in [1] is that, instead of
-    assuming the prior is Gaussian and drawing directly from it, we track a 
-    normal approximation to the posterior distribution using the 
+    assuming the prior is Gaussian and drawing directly from it, we track a
+    normal approximation to the posterior distribution using the
     preconditioning machinery of `automcmc`. Now, while useful when it works,
-    the learning of the target may catastrophically fail since the only 
+    the learning of the target may catastrophically fail since the only
     randomness in the sampler arises from this approximation. For this reason,
     AutoPCN is **not recommended as a standalone sampler**. AutoPCN is intended
     as an exploration kernel for ensemble Monte Carlo methods, such as parallel
-    tempering (as implemented in `nrpt`). 
-    
+    tempering (as implemented in `nrpt`).
+
     .. note::
-       For implementation purposes, we handle :math:`|\\theta|` with the step 
-       size, whereas :math:`sgn(\\theta)` is stored in the `idiosyncratic` 
+       For implementation purposes, we handle :math:`|\\theta|` with the step
+       size, whereas :math:`sgn(\\theta)` is stored in the `idiosyncratic`
        field of :class:`AutoMCMCState`. Theoretically, this amounts to adding
        the sign to the state space of the underlying sampler (with `Unif{-1,1}`
-       measure), while the abs value is handled as the autostep parameter. 
-       
-       Note that we could randomize the sign inside :meth:`refresh_aux_vars`,
-       but this does not seem useful. Also, the kinetic energy is unaffected
-       because the sign is invariant under the involution; and even if it 
-       weren't, its target measure is uniform.
+       measure), while the abs value is handled as the autostep parameter.
+
+       Note we randomize the sign inside :meth:`refresh_aux_vars` along with
+       the proposal point. Note that the kinetic energy is unaffected because
+       the sign is invariant under the involution (and even if it weren't, its
+       target measure is uniform).
 
     .. warning:: This class is still under development.
 
     .. rubric:: References
 
-    [1] Cotter, S. L., Roberts, G. O., Stuart, A. M., & White, D. (2013). 
+    [1] Cotter, S. L., Roberts, G. O., Stuart, A. M., & White, D. (2013).
     MCMC methods for functions: Modifying old algorithms to make them faster.
     *Statistical Science*, 424-446.
 
@@ -52,8 +52,8 @@ class AutoPCN(autostep.AutoStep):
 
     # switch the default selector
     def __init__(
-            self, 
-            *args, 
+            self,
+            *args,
             selector = selectors.MaxEJDSelector(),
             **kwargs
         ):
@@ -61,10 +61,13 @@ class AutoPCN(autostep.AutoStep):
 
     # use the optional `idiosyncratic` field to store the sign of the angle
     def init_extras(self, state):
-        return state._replace(
-            idiosyncratic = jnp.ones((), state.base_step_size.dtype)
-        )
-    
+        key_shape = jnp.shape(state.rng_key)
+        if key_shape == ():
+            sign_field = jnp.ones((), state.base_step_size.dtype)
+        else:
+            sign_field = jnp.ones((key_shape[0],), state.base_step_size.dtype)
+        return state._replace(idiosyncratic = sign_field)
+
     # compute kinetic energy for p ~ N(m, S). Recall that we have U s.t.
     #   UU^T = S^{-1}
     # So the kinetic energy is
@@ -72,29 +75,33 @@ class AutoPCN(autostep.AutoStep):
     # where v:=U^T(p-m), which is the actual variable we carry around
     # Note: we cannot skip this step like in AutoRWMH because the pCN
     # involution does affect the momentum variable.
-    # Note: the sign of the angle (which is technically part of the state of 
-    # the underlying involutive sampler) is itself unaffected by the 
+    # Note: the sign of the angle (which is technically part of the state of
+    # the underlying involutive sampler) is itself unaffected by the
     # involution. But even if it were, its distribution is uniform, so there is
     # no need to handle its energy here.
     def kinetic_energy(self, state, precond_state):
         v_flat = state.p_flat
         return 0.5*jnp.dot(v_flat, v_flat)
-    
-    # sample p ~ N(m,S), where m and S are the approx posterior mean and 
-    # covariance, respectively. Equivalent to v~N(0,I) and p = m + Lv, with 
-    # LL^T = S. Thus, we instead draw v and store it in `p_flat`
-    # Note: the sign of the angle (which is technically part of the state of 
-    # the underlying involutive sampler) is not refreshed.
+
+    # sample p ~ N(m,S), where m and S are the approx posterior mean and
+    # covariance, respectively. Equivalent to v~N(0,I) and p = m + Lv, with
+    # LL^T = S. Thus, we instead draw v and store it in `p_flat`. Also resample
+    # sign for the angle
     def refresh_aux_vars(self, rng_key, state, precond_state):
-        v_flat = random.normal(rng_key, jnp.shape(state.p_flat))
-        return state._replace(p_flat = v_flat)
-    
+        v_key, sign_key = random.split(rng_key)
+        v_flat = random.normal(v_key, jnp.shape(state.p_flat))
+        sign = random.choice(
+            sign_key, jnp.array((-1,1), dtype=state.idiosyncratic.dtype)
+        )
+        return state._replace(p_flat = v_flat, idiosyncratic=sign)
+
     # pCN as joint elliptical rotation (along circle in standardized space)
-    def involution_main(self, step_size, state, precond_state):
+    # with final angle sign flip
+    def involution(self, step_size, state, precond_state):
         x_flat, unravel_fn = flatten_util.ravel_pytree(state.x)
         v_flat = state.p_flat
         m, _, L, U = precond_state
-        
+
         # standardize x
         dense = jnp.ndim(U) == 2
         x_flat_cen = x_flat-m
@@ -106,14 +113,16 @@ class AutoPCN(autostep.AutoStep):
         x_flat_std_new =  cos_theta*x_flat_std + sin_theta*v_flat
         v_flat_new     = -sin_theta*x_flat_std + cos_theta*v_flat
 
-        # undo standardization, update state, and return
+        # undo standardization
         x_flat_new = m + (L @ x_flat_std_new if dense else L * x_flat_std_new)
-        return state._replace(x = unravel_fn(x_flat_new), p_flat = v_flat_new)
-    
-    # flip theta sign
-    def involution_aux(self, state):
-        return state._replace(idiosyncratic = -state.idiosyncratic)
-    
+
+        # flip sign, update state, and return
+        return state._replace(
+            x = unravel_fn(x_flat_new),
+            p_flat = v_flat_new,
+            idiosyncratic = -state.idiosyncratic
+        )
+
     # map the integers into a lattice in (0,pi), such that
     #   1) exponent = 0 => |theta'| = |theta|
     #   2) exponent -> -inf => |theta'| -> 0
