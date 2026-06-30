@@ -144,6 +144,7 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
             proposed_state, selector_params, precond_state
         )
         bwd_step_size = self.step_size(state.base_step_size, bwd_exponent)
+        avg_fwd_bwd_step_size = 0.5 * (fwd_step_size + bwd_step_size)
 
         # check autostep reversibility (failure of the underlying involution is
         # handled inside `auto_step_size`)
@@ -172,10 +173,10 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         )
         if selectors.DEBUG_EXECUTOR:
             jax.debug.print(
-                "reversible? {}, acc_prob={}, fwd_step_size={}",
+                "reversible? {}, acc_prob={:.2f}, avg_fwd_bwd_step_size={:.2e}",
                 reversibility_passed,
                 acc_prob,
-                fwd_step_size,
+                avg_fwd_bwd_step_size,
                 ordered=True
             )
 
@@ -188,10 +189,14 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         )
 
         # collect statistics
-        avg_fwd_bwd_step_size = 0.5 * (fwd_step_size + bwd_step_size)
         new_stats = statistics.record_post_sample_stats(
-            next_state.stats, avg_fwd_bwd_step_size, acc_prob, reversibility_passed,
-            jax.flatten_util.ravel_pytree(getattr(next_state, self.sample_field))[0]
+            next_state.stats,
+            avg_fwd_bwd_step_size,
+            acc_prob,
+            reversibility_passed,
+            jax.flatten_util.ravel_pytree(
+                getattr(next_state, self.sample_field)
+            )[0]
         )
         next_state = next_state._replace(stats = new_stats)
 

@@ -149,6 +149,10 @@ class AcceptProbBracketingSelector(StepSizeSelector, metaclass=ABCMeta):
             )
 
             # roundtrip involution, no need to update log joint
+            # note: this is only needed for the next step. For all current
+            # samplers except constrained, the reversibility returns True
+            # always. Therefore, building the roundtrip_state should be
+            # eliminated as dead code by the JIT compiler
             roundtrip_state = kernel.involution(
                 step_size, next_state, precond_state
             )
