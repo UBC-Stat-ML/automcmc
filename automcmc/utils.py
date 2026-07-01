@@ -32,11 +32,18 @@ def ceil_log2(x):
 
 def numerically_safe_diff(x0, x1):
     """
-    Return `x1-x0` if x1 is not the next float after x0, and 0 otherwise.
+    Return `x1-x0` if `x1` is not the next float after `x0` or if any of them
+    is not finite. Otherwise, return `0`.
     """
     return jnp.where(
-        jax.lax.nextafter(x0, x1) == x1, jnp.zeros_like(x0), x1-x0
+        jnp.logical_and(
+            jnp.logical_and(jnp.isfinite(x0), jnp.isfinite(x1)),
+            jnp.nextafter(x0, x1) == x1
+        ),
+        jnp.zeros_like(x0),
+        x1-x0
     )
+
 
 ###############################################################################
 # Rounds-based sampling arithmetic
