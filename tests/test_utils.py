@@ -5,6 +5,15 @@ from automcmc import utils
 
 class TestUtils(unittest.TestCase):
 
+    def test_safe_diff(self):
+        self.assertAlmostEqual(utils.numerically_safe_diff(3,4), 1, delta=1e-6)
+        self.assertEqual(
+            utils.numerically_safe_diff(jnp.array(1.0), 1.0+jnp.spacing(1.0)), 0
+        )
+        self.assertTrue(
+            jnp.isnan(utils.numerically_safe_diff(jnp.inf, jnp.inf))
+        )
+
     def test_round_arithmetic(self):
         for n_rounds in jnp.arange(1,30):
             # print(f"n_rounds={n_rounds}")
