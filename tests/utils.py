@@ -151,6 +151,30 @@ def cone_potential(x):
         jnp.inf,
     )
 
+###### double torus ####
+# Source: alexxthiery.github.io/notes/MCMC_on_manifold/mcmc_manifold.html
+#   F(x,y,z) = (x^2(x^2-1)+y^2)^2 + z^2 - rho
+#       = (x^4 - x^2 + y^2)^2 + z^2 - rho
+# dF/dx = 2(x^4 - x^2 + y^2)(4x^3 - 2x)
+# dF/dy = 2(x^4 - x^2 + y^2)(2y)
+# dF/dz = 2z
+# => JJ^T
+#    = 4(x^4 - x^2 + y^2)^2(4x^3 - 2x)^2
+#     +4(x^4 - x^2 + y^2)^2(2y)^2
+#     +4z^2
+#    = 4{(x^4 - x^2 + y^2)^2[(4x^3 - 2x)^2 + (2y)^2] + z^2}
+#    = 4{(x^4 - x^2 + y^2)^2[1 + (4x^3 - 2x)^2 + (2y)^2 - 1] + z^2 -rho + rho}
+#    = 4{F(x,y,z) + (x^4 - x^2 + y^2)^2[(4x^3 - 2x)^2 + (2y)^2 - 1] + rho}
+# So in the levelset F(x,y,z)=0 and thus
+#   JJ^T = 4{(x^4 - x^2 + y^2)^2[(4x^3 - 2x)^2 + (2y)^2 - 1] + rho}
+# This is not constant so for sampling the uniform distribution, we need to
+# not include the co-area correction
+def double_torus_constraint(v):
+    assert jnp.shape(v) == (3,)
+    x,y,z = v
+    x_sq = x*x
+    return jnp.array([jnp.square(x_sq*(x_sq-1) + y*y) + z*z - 0.03])
+
 ###############################################################################
 # diagnostics
 ###############################################################################

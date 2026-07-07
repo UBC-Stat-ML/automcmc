@@ -259,6 +259,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             solver_options: dict = {},
             x_tols: dict = {},
             levelset_finder_settings: Optional[bool | dict] = None,
+            add_coarea_factor: bool = True,
             **kwargs
         ) -> None:
         """Instantiate an :class:`AutoConstrainedRWMH` sampler.
@@ -300,6 +301,9 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             structure as
             `automcmc.optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS['NADAMW']`.
         :param kwargs: Passed to the :class:`AutoStep` constructor.
+        :param bool add_coarea_factor: should we include the correction
+            term in the co-area formula to the total log probability? Defaults
+            to `True`.
 
 
         .. rubric:: References
@@ -344,6 +348,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             levelset_finder_settings['n_iter'] = 256
 
         self.levelset_finder_settings = levelset_finder_settings
+        self.add_coarea_factor = add_coarea_factor
 
     def proj_level_set(
             self,
@@ -499,7 +504,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     #     solver failures are handled gracefully by the autostep executors
     def postprocess_logprior_and_loglik(self, state, log_prior, log_lik):
         lss = state.idiosyncratic
-        log_prior += lss.log_abs_det
+        if self.add_coarea_factor:
+            log_prior += lss.log_abs_det
         log_lik = jnp.where(lss.is_satisfied, log_lik, -jnp.inf)
         return log_prior, log_lik
 
