@@ -494,6 +494,48 @@ class TestConstrained(unittest.TestCase):
         mcmc.run(mcmc_key, init_params=init_params)
         assert True
 
+    def test_double_torus_unif(self):
+        # Sample the uniform distribution on the double torus by turning off
+        # the co-area factor. This is necessary because the factor is not
+        # constant on the zero level set.
+        rng_key = jax.random.key(6)
+        n_rounds = 10
+        n_warm, n_keep = utils.split_n_rounds(n_rounds)
+        init_key, mcmc_key = jax.random.split(rng_key)
+        init_params = jax.random.uniform(init_key,(3,),minval=-1)
+        extra_fields = ('idiosyncratic.log_abs_det', 'log_prior', 'log_lik')
+        kernel = constrained.AutoConstrainedRWMH(
+            potential_fn = lambda x: jnp.zeros_like(x,shape=()),
+            constraint_fn = testutils.double_torus_constraint,
+            levelset_finder_settings = True,
+            init_base_step_size = 0.5,
+            selector = selectors.DeterministicSymmetricSelector(p_hi=0.9),
+            add_coarea_factor= False
+        )
+        mcmc = MCMC(
+            kernel,
+            num_warmup=n_warm,
+            num_samples=n_keep,
+            progress_bar=False
+        )
+        mcmc.run(mcmc_key, init_params=init_params,extra_fields = extra_fields)
+        extra_fields_samples = mcmc.get_extra_fields()
+
+        # check the factor changes along the surface
+        self.assertGreater(
+            extra_fields_samples['idiosyncratic.log_abs_det'].std(),
+            0.1
+        )
+
+        # check the total log_prior is exactly zero (i.e., that the co-area
+        # factor was not added to it)
+        self.assertTrue(jnp.allclose(extra_fields_samples['log_prior'], 0))
+
+        # check the log_lik is also zero (this is always true for constrained
+        # sampling via `potential_fn`)
+        self.assertTrue(jnp.allclose(extra_fields_samples['log_lik'], 0))
+
+
 
 if __name__ == '__main__':
     unittest.main()
