@@ -48,7 +48,8 @@ class TestUtils(unittest.TestCase):
 
             # unstable initial point => divergence
             x0 = jnp.array([ 0.36057416,  1.2849895 , -0.73873436])
-            x, n, val, err, d_err, is_satisfied = utils.newton(f, x0, mode=mode)
+            x, n, val, err, d_err, is_satisfied = utils.newton(
+                f, x0, max_iter=30, mode=mode)
             self.assertFalse(is_satisfied)
             self.assertEqual(n, 4) # divergence caught
             self.assertGreater(d_err, 0)

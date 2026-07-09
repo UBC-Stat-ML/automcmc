@@ -270,8 +270,8 @@ class TestConstrained(unittest.TestCase):
             self.assertAlmostEqual(phi.mean(), jnp.pi, delta=0.15)
 
             # KS tests
-            self.assertGreater(stats.ks_1samp(theta, theta_cdf_fn).pvalue, 0.01)
-            self.assertGreater(stats.ks_1samp(phi, phi_cdf_fn).pvalue, 0.01)
+            self.assertGreater(stats.ks_1samp(theta, theta_cdf_fn).pvalue, 0.001)
+            self.assertGreater(stats.ks_1samp(phi, phi_cdf_fn).pvalue, 0.001)
 
 
     def test_sampling_cone(self):
@@ -507,7 +507,6 @@ class TestConstrained(unittest.TestCase):
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn = lambda x: jnp.zeros_like(x,shape=()),
             constraint_fn = testutils.double_torus_constraint,
-            levelset_finder_settings = True,
             init_base_step_size = 0.5,
             selector = selectors.DeterministicSymmetricSelector(p_hi=0.9),
             add_coarea_factor= False

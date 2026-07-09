@@ -143,6 +143,7 @@ def newton(
     dim = len(x0)
     val0 = f(x0)
     assert len(val0) == dim
+    n_skip_err_inc = max_iter // 10 # first tenth of max iters can increase error
     err0 = newton_fn_value_err(val0)
     if tol is None:
         tol = newton_default_tol(err0)
@@ -150,10 +151,13 @@ def newton(
     def cond_fn(carry):
         x, n, val, err, d_err = carry
         return jnp.logical_and(
-            n < max_iter,                        # still have budget to go
+            # still have budget to go
+            n < max_iter,
             jnp.logical_and(
-                err >= tol,                      # error still high
-                jnp.logical_or(n<3, d_err < tol) # after 3rd round, error is not increasing significantly
+                # error still high
+                err >= tol,
+                # after `n_skip_err_inc` round, error is not increasing significantly
+                jnp.logical_or(n<n_skip_err_inc, d_err < tol)
             )
         )
 
