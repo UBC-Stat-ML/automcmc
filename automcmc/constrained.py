@@ -517,6 +517,11 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             x, y, self.x_tols['rtol'], self.x_tols['atol']
         )
 
+    # need to actually build the roundtrip state because involution is not
+    # guaranteed to succeed
+    def maybe_get_roundtrip_state(self, step_size, next_state, precond_state):
+        return self.involution(step_size, next_state, precond_state)
+
     def reversibility_check(
             self,
             initial_state: AutoMCMCState,
