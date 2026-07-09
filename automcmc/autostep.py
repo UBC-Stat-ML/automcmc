@@ -42,6 +42,12 @@ class AutoStep(AutoMCMC, metaclass=ABCMeta):
         """
         pass
 
+    # all but the constrained sampler use involutions that are guaranteed to
+    # succeed, so we don't need to build the roundtrip state to check if it
+    # matches the initial state
+    def maybe_get_roundtrip_state(self, step_size, next_state, precond_state):
+        return None
+
     def auto_step_size(self, state, selector_params, precond_state):
         """
         Find an appropriate step size using the criterion defined by the

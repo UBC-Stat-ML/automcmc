@@ -85,7 +85,7 @@ def close_in_norm(
     ) -> jax.Array:
     """
     Check closeness of two arrays by comparing the norm of their difference to
-    the maximum of their individual norms
+    the minimum of their individual norms.
 
     :param ArrayLike x: first array to compare.
     :param ArrayLike y: second array to compare.
@@ -96,7 +96,7 @@ def close_in_norm(
     diff_norm = jnp.linalg.norm(x-y)
     x_norm = jnp.linalg.norm(x)
     y_norm = jnp.linalg.norm(y)
-    return diff_norm < jnp.maximum(atol, rtol*jnp.maximum(x_norm, y_norm))
+    return diff_norm < jnp.maximum(atol, rtol*jnp.minimum(x_norm, y_norm))
 
 def newton_default_tol(x: ArrayLike) -> jax.Array:
     # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most packages
