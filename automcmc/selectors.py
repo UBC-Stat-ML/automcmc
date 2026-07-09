@@ -40,6 +40,32 @@ class StepSizeSelector(ABC):
         """
         return mean_step_size
 
+    @abstractmethod
+    def gen_executor(self, kernel):
+        """
+        Factory for the procedure implementing the logic of a selector.
+
+        :param kernel: An instance of :class:`autostep.AutoStep`.
+        :return: A function.
+        """
+        pass
+
+
+class FixedStepSizeSelector(StepSizeSelector):
+    """
+    A dummy selector that never adjusts the step size.
+    """
+    @staticmethod
+    def adapt_base_step_size(base_step_size, mean_step_size, n_samples_in_round):
+        return base_step_size
+
+    def gen_executor(self, kernel):
+        def auto_step_size_fn(state, selector_params, precond_state):
+            return state, 0
+
+        return auto_step_size_fn
+
+
 #######################################
 # acceptance probability bracketing
 #######################################
@@ -321,28 +347,6 @@ def DeterministicSymmetricSelector(p_lo=0.0001, p_hi=0.9999, *args, **kwargs):
         bounds_sampler = make_deterministic_bounds_sampler(p_lo, p_hi),
         **kwargs
     )
-
-class FixedStepSizeSelector(AcceptProbBracketingSelector):
-    """
-    A dummy selector that never adjusts the step size.
-    """
-    def __init__(self):
-        super().__init__(
-            max_n_iter = 0,
-            bounds_sampler = make_deterministic_bounds_sampler(0.4, 0.6) # bounds are irrelevant
-        )
-
-    @staticmethod
-    def should_grow(bounds, log_diff):
-        return False
-
-    @staticmethod
-    def should_shrink(bounds, log_diff):
-        return False
-
-    @staticmethod
-    def adapt_base_step_size(base_step_size, mean_step_size, n_samples_in_round):
-        return base_step_size
 
 
 #######################################
