@@ -15,7 +15,6 @@ class TestSelectors(unittest.TestCase):
     def test_selectors(self):
         asym_sel = selectors.AsymmetricSelector()
         sym_sel = selectors.SymmetricSelector()
-        fix_sel = selectors.FixedStepSizeSelector()
         det_asym_sel = selectors.DeterministicAsymmetricSelector()
         det_sym_sel = selectors.DeterministicSymmetricSelector()
         params = jnp.array([-1.5, -0.5])
@@ -26,12 +25,10 @@ class TestSelectors(unittest.TestCase):
         self.assertTrue(det_asym_sel.should_grow(params, log_diff))
         self.assertFalse(sym_sel.should_grow(params, log_diff))
         self.assertFalse(det_sym_sel.should_grow(params, log_diff))
-        self.assertFalse(fix_sel.should_grow(params, log_diff))
         self.assertFalse(asym_sel.should_shrink(params, log_diff))
         self.assertFalse(det_asym_sel.should_shrink(params, log_diff))
         self.assertFalse(sym_sel.should_shrink(params, log_diff))
         self.assertFalse(det_sym_sel.should_shrink(params, log_diff))
-        self.assertFalse(fix_sel.should_shrink(params, log_diff))
 
         # sym and asym should agree in the following 2 cases
         log_diff = jnp.float32(-2)
@@ -53,7 +50,7 @@ class TestSelectors(unittest.TestCase):
         self.assertFalse(det_asym_sel.should_shrink(params, log_diff))
         self.assertFalse(sym_sel.should_shrink(params, log_diff))
         self.assertFalse(det_sym_sel.should_shrink(params, log_diff))
-    
+
     def test_max_n_iter_respected(self):
         kernel_class = autohmc.AutoMALA
         rng_key = random.key(90)
@@ -71,7 +68,7 @@ class TestSelectors(unittest.TestCase):
             kernel = mcmc.sampler
             state = mcmc.last_state
             precond_state = state.base_precond_state
-            
+
             # check n iters are bounded
             state = kernel.update_log_joint(state, precond_state) # should be ok but just in case
             exponent = kernel.auto_step_size(
