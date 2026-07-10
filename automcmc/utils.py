@@ -78,6 +78,12 @@ def n_warmup_to_adapt_rounds(n_warmup):
 ###############################################################################
 
 @jax.jit
+def _symmetric_allclose_thresholds(a,b,rtol,atol):
+    elemwise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
+    elemwise_thresholds = jnp.maximum(atol, rtol*elemwise_smallest_abs)
+    return elemwise_thresholds
+
+@jax.jit
 def symmetric_allclose(
         a: ArrayLike,
         b: ArrayLike,
@@ -101,16 +107,18 @@ def symmetric_allclose(
     :return jax.Array: `True` if close.
     """
     assert jnp.shape(a) == jnp.shape(b)
-    elemwise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
-    elemwise_thresholds = jnp.maximum(atol, rtol*elemwise_smallest_abs)
+    elemwise_thresholds = _symmetric_allclose_thresholds(a, b, rtol, atol)
     return jnp.all(jnp.abs(a-b) < elemwise_thresholds)
 
 def newton_default_tol(x: ArrayLike) -> jax.Array:
-    # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most packages
-    # we use eps^0.4 for a slightly tighter requirement.
-    # This is then increased as log(n) because we focus on max-error, which
-    # scales logarithmically in the iid case (assuming subexponential tails)
-    return jnp.maximum(1.0,jnp.log(x.size))*(jnp.finfo(x.dtype).eps**0.4)
+    # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most
+    # implementations of Newton algorithm. We use eps^0.5 for a slightly
+    # tighter requirement. This is then increased linearly because we focus on
+    # max-error, which in worse case (heavy tailed sequences) scales as sum so
+    # O(n). It would be logarithmically in the iid case if we also assume
+    # subexponential tails, but this is not representative of the errors seen
+    # in experiments (very heavy tailed).
+    return x.size*jnp.sqrt(jnp.finfo(x.dtype).eps)
 
 def newton_fn_value_err(val):
     return jnp.abs(val).max()
@@ -119,7 +127,7 @@ def newton(
         f: Callable[[ArrayLike], jax.Array],
         x0: ArrayLike,
         tol: ArrayLike,
-        max_iter: int = 100,
+        max_iter: int = 50,
         mode: str = "direct"
     ) -> tuple:
     """

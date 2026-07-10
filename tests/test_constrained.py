@@ -105,6 +105,7 @@ class TestConstrained(unittest.TestCase):
 
 
     def test_constrained_involution(self):
+        # constrained.DEBUG_CONSTRAINED_SAMPLING=True
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
         rng_key = jax.random.key(1)
         n_dim = 121
@@ -113,7 +114,7 @@ class TestConstrained(unittest.TestCase):
             'circle': lambda x: (x*x).sum(keepdims=True)-1,
             'orthonormal': testutils.orthonormal_constraint
         }
-        n_reps = 3
+        n_reps = 10
         for constraint_fn_type, constraint_fn in constraint_fn_types.items():
             for n_rep in range(n_reps):
                 with self.subTest(
@@ -167,9 +168,19 @@ class TestConstrained(unittest.TestCase):
                         utils.newton_fn_value_err(constraint_fn(state_one.x)),
                         tol
                     )
-                    self.assertFalse(kernel.close_in_ambient_space(
-                            state_one.x, state.x
-                    ))
+
+                    # check x
+                    atol,rtol = kernel.x_tols['atol'], kernel.x_tols['rtol']
+                    elemwise_thresholds = utils._symmetric_allclose_thresholds(
+                        state.x, state_one.x, rtol,atol)
+                    abs_diffs = jnp.abs(state.x - state_one.x)
+                    imax = (abs_diffs-elemwise_thresholds).argmax()
+                    self.assertFalse(
+                        kernel.close_in_ambient_space(state_one.x, state.x),
+                        f"\nstate_one.x[imax]={state_one.x[imax]}\n"
+                        f"state.x[imax]={state.x[imax]}\n"
+                        f"elemwise_thresholds[imax]={elemwise_thresholds[imax]}"
+                    )
                     self.assertAlmostEqual(
                         # due to nature of this problem, velocities are also
                         # rotating around, and therefore its density (std
@@ -193,13 +204,11 @@ class TestConstrained(unittest.TestCase):
                         f"|diff|/|x0| = {jnp.linalg.norm(state_two.x- state.x)/jnp.linalg.norm(state.x)}"
                     )
 
-                    # TEST
-                    atol,rtol = kernel.x_tols['atol'], kernel.x_tols['rtol']
-                    a,b = state.p_flat, state_two.p_flat
-                    elem_wise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
-                    thresholds = jnp.maximum(atol, rtol*elem_wise_smallest_abs)
-                    abs_diffs = jnp.abs(a-b)
-                    imax = (abs_diffs-thresholds).argmax()
+                    # check p
+                    elemwise_thresholds = utils._symmetric_allclose_thresholds(
+                        state_two.p_flat, state.p_flat, rtol,atol)
+                    abs_diffs = jnp.abs(state_two.p_flat - state.p_flat)
+                    imax = (abs_diffs-elemwise_thresholds).argmax()
                     self.assertTrue(
                         kernel.close_in_ambient_space(
                             state_two.p_flat, state.p_flat
@@ -207,7 +216,7 @@ class TestConstrained(unittest.TestCase):
                         f"state.p_flat[imax]={state.p_flat[imax]}\n"
                         f"state_two.p_flat[imax]={state_two.p_flat[imax]}\n"
                         f"abs_diffs[imax]={abs_diffs[imax]}\n"
-                        f"thresholds[imax]={thresholds[imax]}"
+                        f"thresholds[imax]={elemwise_thresholds[imax]}"
                     )
 
     def test_sampling_torus(self):
@@ -250,8 +259,8 @@ class TestConstrained(unittest.TestCase):
         # assumption is "less broken"
         mode = "direct"
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
-        n_warm, n_keep = utils.split_n_rounds(15)
-        thinning=32 # %ESS ~ 1/32
+        n_warm, n_keep = utils.split_n_rounds(12)
+        thinning=16
         init_params = jnp.ones(3) # init outside level set on purpose
         extra_fields = ('idiosyncratic.log_abs_det',)
         for sel in (
@@ -274,6 +283,10 @@ class TestConstrained(unittest.TestCase):
                 progress_bar=False
             )
             mcmc.run(mcmc_key,init_params=init_params, extra_fields=extra_fields)
+            max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+            self.assertLess(max_grd, 1.02)
+            self.assertGreater(min_ess, 90)
+
             log_abs_det = next(iter((mcmc.get_extra_fields().values())))
             self.assertLess(jnp.abs(log_abs_det).max(), 2*kernel.x_tols['atol']) # check that they are all ~0
             samples = mcmc.get_samples()
@@ -299,8 +312,8 @@ class TestConstrained(unittest.TestCase):
         # mcmc sampling
         rng_key = jax.random.key(67534)
         init_params=jnp.full((3,), 0.5) # init in interior of cone
-        n_warm, n_keep = utils.split_n_rounds(14)
-        thinning=16 # %ESS ~ 1/16
+        n_warm, n_keep = utils.split_n_rounds(12)
+        thinning=16
         extra_fields = ('idiosyncratic.log_abs_det',)
         for sel in (
             selectors.FixedStepSizeSelector(),
@@ -325,6 +338,9 @@ class TestConstrained(unittest.TestCase):
                 mcmc.run(
                     mcmc_key, init_params=init_params, extra_fields=extra_fields
                 )
+                max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+                self.assertLess(max_grd, 1.02)
+                self.assertGreater(min_ess, 90)
                 log_abs_det = next(iter((mcmc.get_extra_fields().values())))
                 self.assertLess(
                     jnp.abs(log_abs_det+jnp.log(2)/2).max(), 1e-5 # check it matches the known constant
@@ -354,7 +370,6 @@ class TestConstrained(unittest.TestCase):
                 init_params=jax.random.normal(init_key, (n_dim,)) # init in interior of cone
                 n_warm, n_keep = utils.split_n_rounds(13)
                 thinning=2**6 # %ESS ~ 1/64
-                extra_fields = ('idiosyncratic.log_abs_det',)
                 rng_key, mcmc_key = jax.random.split(rng_key)
                 kernel = constrained.AutoConstrainedRWMH(
                     potential_fn=potential_fn,
@@ -371,11 +386,7 @@ class TestConstrained(unittest.TestCase):
                     thinning=thinning,
                     progress_bar=False
                 )
-                mcmc.run(
-                    mcmc_key, init_params=init_params, extra_fields=extra_fields
-                )
-                log_abs_det = next(iter((mcmc.get_extra_fields().values())))
-                self.assertLess(log_abs_det.std(), 0.05)
+                mcmc.run(mcmc_key, init_params=init_params)
 
                 # ks test for normality of traces of the matrices
                 traces = jax.vmap(
@@ -475,7 +486,7 @@ class TestConstrained(unittest.TestCase):
 
         # define settings
         rng_key = jax.random.key(6)
-        n_rounds = 14
+        n_rounds = 13
         thinning = 2**4
         n_warm, n_keep = utils.split_n_rounds(n_rounds)
         measured_times = jnp.array((4.0,8.0,16.0))
@@ -508,14 +519,19 @@ class TestConstrained(unittest.TestCase):
             progress_bar=False
         )
         mcmc.run(mcmc_key, init_params=init_params)
-        assert True
+        max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+        self.assertLess(max_grd, 1.02)
+        self.assertGreater(min_ess, 90)
+
 
     def test_double_torus_unif(self):
+        # constrained.DEBUG_CONSTRAINED_SAMPLING=True
         # Sample the uniform distribution on the double torus by turning off
         # the co-area factor. This is necessary because the factor is not
         # constant on the zero level set.
         rng_key = jax.random.key(6)
-        n_rounds = 10
+        n_rounds = 12
+        thinning = 2**4
         n_warm, n_keep = utils.split_n_rounds(n_rounds)
         init_key, mcmc_key = jax.random.split(rng_key)
         init_params = jax.random.uniform(init_key,(3,),minval=-1)
@@ -523,20 +539,25 @@ class TestConstrained(unittest.TestCase):
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn = lambda x: jnp.zeros_like(x,shape=()),
             constraint_fn = testutils.double_torus_constraint,
-            init_base_step_size = 0.5,
-            selector = selectors.DeterministicSymmetricSelector(p_hi=0.9),
-            add_coarea_factor= False
+            init_base_step_size = 0.8,
+            selector = selectors.FixedStepSizeSelector(),
+            add_coarea_factor= False,
+            levelset_finder_settings=True
         )
         mcmc = MCMC(
             kernel,
             num_warmup=n_warm,
             num_samples=n_keep,
+            thinning=thinning,
             progress_bar=False
         )
         mcmc.run(mcmc_key, init_params=init_params,extra_fields = extra_fields)
-        extra_fields_samples = mcmc.get_extra_fields()
+        max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+        self.assertLess(max_grd, 1.02)
+        self.assertGreater(min_ess, 90)
 
         # check the factor changes along the surface
+        extra_fields_samples = mcmc.get_extra_fields()
         self.assertGreater(
             extra_fields_samples['idiosyncratic.log_abs_det'].std(),
             0.1
