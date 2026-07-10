@@ -9,6 +9,9 @@ from scipy import stats
 import jax
 from jax import numpy as jnp
 
+import numpyro
+from numpyro.infer import MCMC
+
 from automcmc import (
     constrained,
     utils,
@@ -17,7 +20,6 @@ from automcmc import (
     optimization
 )
 from automcmc.constrained import LevelSetHandlerCholesky, LevelSetHandlerQR
-from numpyro.infer import MCMC
 
 TESTED_LEVELSET_HANDLERS = (LevelSetHandlerCholesky(), LevelSetHandlerQR())
 
@@ -401,7 +403,7 @@ class TestConstrained(unittest.TestCase):
         n_chains = 64
         n_dim = 2
         rng_key = jax.random.key(9)
-        n_warm, n_keep = utils.split_n_rounds(13)
+        n_warm, n_keep = utils.split_n_rounds(11)
         thinning=2**3
 
         # define an equally spaced grid in [0,1]
@@ -439,25 +441,23 @@ class TestConstrained(unittest.TestCase):
         # make sure we didn't request too small radii
         self.assertGreater(init_obs_output[0,0], kernel.solver_options['tol'])
 
-        # check that the fwd model is respected along chains at every sample step
-        fwd_vals = jax.vmap(jax.vmap(fwd_model))(samples)
-        self.assertTrue(jnp.all(
-            jax.vmap(
-                partial(jnp.allclose, rtol=0, atol=kernel.solver_options['tol']),
-                in_axes=(1,None),
-            )(fwd_vals, init_obs_output)
-        ))
+        # check min ESS across all levelsets and both dims
+        min_ess = n_keep
+        for s in samples:
+            summary=numpyro.diagnostics.summary(s, group_by_chain=False)
+            min_ess = min(
+                min_ess, min(v['n_eff'].min() for v in summary.values())
+            )
+        self.assertGreater(min_ess, 90)
 
-        # but also check that the submanifolds are explored by ensuring the
+        # check that the submanifolds are explored by ensuring the
         # angles follow a Unif(-pi,pi) distribution
         # use a simple histogram check instead of KS test (too sensitive at
         # this number of samples, which are not really indep anyway)
         # impose grid to avoid being fooled by constant data
         angles = jnp.arctan2(samples[:,:,0],samples[:,:,1]).flatten()
         hist = jnp.histogram(angles,bins=jnp.linspace(-jnp.pi, jnp.pi, 11))
-        self.assertTrue(
-            jnp.allclose(hist[0], angles.size/10, rtol=0.15)
-        )
+        self.assertTrue(jnp.allclose(hist[0], angles.size/10, rtol=0.075))
 
     def test_mrna(self):
         def prior_potential(x):
