@@ -77,6 +77,17 @@ def n_warmup_to_adapt_rounds(n_warmup):
 # numerical utils
 ###############################################################################
 
+# Symmetric version of `jnp.allclose`, which is elementwise `jnp.isclose`
+# plus a `jnp.all` reduction. Note that
+#   |a-b| < max{atol, rtol*min{|a|,|b|}} < max{atol, rtol|b|} < atol + rtol|b|
+# The first inequality is symmetric in (a,b), and the last term on the right is
+# the threshold used in `jnp.isclose`. So the symmetric version is stricter.
+def symmetric_allclose(a,b,rtol,atol):
+    assert jnp.shape(a) == jnp.shape(b)
+    elem_wise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
+    thresholds = jnp.maximum(atol, rtol*elem_wise_smallest_abs)
+    return jnp.all(jnp.abs(a-b) < thresholds)
+
 def close_in_norm(
         x: ArrayLike,
         y: ArrayLike,
@@ -111,7 +122,7 @@ def newton_fn_value_err(val):
 def newton(
         f: Callable[[ArrayLike], jax.Array],
         x0: ArrayLike,
-        tol: Optional[float] = None,
+        tol: ArrayLike,
         max_iter: int = 100,
         mode: str = "direct"
     ) -> tuple:
@@ -145,8 +156,6 @@ def newton(
     assert len(val0) == dim
     n_skip_err_inc = max_iter // 10 # first tenth of max iters can increase error
     err0 = newton_fn_value_err(val0)
-    if tol is None:
-        tol = newton_default_tol(err0)
 
     def cond_fn(carry):
         x, n, val, err, d_err = carry

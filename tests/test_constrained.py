@@ -39,7 +39,7 @@ class TestConstrained(unittest.TestCase):
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn=pot,
             fwd_model=lambda x: jnp.ones_like(x, shape=(2,)),
-            init_obs_output=jnp.array([-3,3]), # not in range of fwd mod
+            init_obs_output=jnp.array([-3.0,3.0]), # not in range of fwd mod
         )
         with self.assertRaisesRegex(AssertionError, "Cannot find feasible"):
             kernel.init(jax.random.key(1), 0, init_params, (), {})
@@ -132,8 +132,12 @@ class TestConstrained(unittest.TestCase):
                         refresh_key
                     ) = jax.random.split(rng_key, 4)
                     init_params = jax.random.normal(randn_key, (n_dim,))
+                    x_atol = utils.newton_default_tol(init_params)
+                    q_atol = utils.newton_default_tol(constraint_fn(init_params))
                     state = kernel.init(init_key, 0, init_params, (), {})
+                    self.assertEqual(x_atol, kernel.x_tols['atol'])
                     tol = kernel.solver_options['tol']
+                    self.assertEqual(tol, q_atol)
                     self.assertTrue(state.idiosyncratic.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(constraint_fn(state.x)), tol
@@ -188,10 +192,22 @@ class TestConstrained(unittest.TestCase):
                         kernel.close_in_ambient_space(state_two.x, state.x),
                         f"|diff|/|x0| = {jnp.linalg.norm(state_two.x- state.x)/jnp.linalg.norm(state.x)}"
                     )
+
+                    # TEST
+                    atol,rtol = kernel.x_tols['atol'], kernel.x_tols['rtol']
+                    a,b = state.p_flat, state_two.p_flat
+                    elem_wise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
+                    thresholds = jnp.maximum(atol, rtol*elem_wise_smallest_abs)
+                    abs_diffs = jnp.abs(a-b)
+                    imax = (abs_diffs-thresholds).argmax()
                     self.assertTrue(
                         kernel.close_in_ambient_space(
                             state_two.p_flat, state.p_flat
                         ),
+                        f"state.p_flat[imax]={state.p_flat[imax]}\n"
+                        f"state_two.p_flat[imax]={state_two.p_flat[imax]}\n"
+                        f"abs_diffs[imax]={abs_diffs[imax]}\n"
+                        f"thresholds[imax]={thresholds[imax]}"
                     )
 
     def test_sampling_torus(self):
