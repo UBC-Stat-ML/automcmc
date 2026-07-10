@@ -77,37 +77,33 @@ def n_warmup_to_adapt_rounds(n_warmup):
 # numerical utils
 ###############################################################################
 
-# Symmetric version of `jnp.allclose`, which is elementwise `jnp.isclose`
-# plus a `jnp.all` reduction. Note that
-#   |a-b| < max{atol, rtol*min{|a|,|b|}} < max{atol, rtol|b|} < atol + rtol|b|
-# The first inequality is symmetric in (a,b), and the last term on the right is
-# the threshold used in `jnp.isclose`. So the symmetric version is stricter.
-def symmetric_allclose(a,b,rtol,atol):
-    assert jnp.shape(a) == jnp.shape(b)
-    elem_wise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
-    thresholds = jnp.maximum(atol, rtol*elem_wise_smallest_abs)
-    return jnp.all(jnp.abs(a-b) < thresholds)
-
-def close_in_norm(
-        x: ArrayLike,
-        y: ArrayLike,
+@jax.jit
+def symmetric_allclose(
+        a: ArrayLike,
+        b: ArrayLike,
         rtol: ArrayLike,
         atol: ArrayLike
     ) -> jax.Array:
     """
-    Check closeness of two arrays by comparing the norm of their difference to
-    the minimum of their individual norms.
+    Symmetric version of :func:`jnp.allclose`, which is basically elementwise
+    :func:`jnp.isclose` plus a :func:`jnp.all` reduction. Note that
+    ```
+        |a-b| < max{atol, rtol*min{|a|,|b|}} < max{atol,rtol|b|} < atol+rtol|b|
+    ```
+    The first inequality is symmetric in `(a,b)`, and the last term on the
+    right is the threshold used in `jnp.isclose`. So the symmetric version is
+    also stricter.
 
-    :param ArrayLike x: first array to compare.
-    :param ArrayLike y: second array to compare.
+    :param ArrayLike a: first array to compare.
+    :param ArrayLike b: second array to compare.
     :param ArrayLike rtol: relative tolerance.
     :param ArrayLike atol: absolute tolerance
     :return jax.Array: `True` if close.
     """
-    diff_norm = jnp.linalg.norm(x-y)
-    x_norm = jnp.linalg.norm(x)
-    y_norm = jnp.linalg.norm(y)
-    return diff_norm < jnp.maximum(atol, rtol*jnp.minimum(x_norm, y_norm))
+    assert jnp.shape(a) == jnp.shape(b)
+    elemwise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
+    elemwise_thresholds = jnp.maximum(atol, rtol*elemwise_smallest_abs)
+    return jnp.all(jnp.abs(a-b) < elemwise_thresholds)
 
 def newton_default_tol(x: ArrayLike) -> jax.Array:
     # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most packages
