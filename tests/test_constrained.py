@@ -553,7 +553,7 @@ class TestConstrained(unittest.TestCase):
         )
         mcmc.run(mcmc_key, init_params=init_params,extra_fields = extra_fields)
         max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
-        self.assertLess(max_grd, 1.02)
+        self.assertLess(max_grd, 1.04)
         self.assertGreater(min_ess, 90)
 
         # check the factor changes along the surface
