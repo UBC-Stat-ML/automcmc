@@ -256,8 +256,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
             fwd_model: Optional[Callable[[ArrayLike], jax.Array]] = None,
             init_obs_output: Optional[ArrayLike] = None,
             levelset_handler: LevelSetHandler = LevelSetHandlerQR(),
-            solver_options: dict = {},
-            x_tols: dict = {},
+            solver_options: Optional[dict] = None,
+            x_tols: Optional[dict] = None,
             levelset_finder_settings: Optional[bool | dict] = None,
             add_coarea_factor: bool = True,
             **kwargs
@@ -335,8 +335,8 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         self.fwd_model = fwd_model
         self.init_obs_output = 0 if init_obs_output is None else init_obs_output
         self.levelset_handler = levelset_handler
-        self.solver_options = solver_options
-        self.x_tols = x_tols
+        self.solver_options = {} if solver_options is None else solver_options
+        self.x_tols = {} if x_tols is None else x_tols
         if (
             levelset_finder_settings and
             (not isinstance(levelset_finder_settings, dict))
@@ -426,7 +426,16 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         # (and `.size`, etc) so as to return the un-vmapped value. Hence, tols
         # are the same scalars regardless of vectorization
         if 'tol' not in self.solver_options:
-            self.solver_options['tol'] = utils.newton_default_tol(x_flat)
+            # need to set Newton solver tolerance, using a template vector in
+            # output space. We need to handle case where `constraint_fn` is
+            # used instead of `fwd_model`
+            output_template = (
+                self.fwd_model(x_flat) if isinstance(init_obs_output, int)
+                else init_obs_output
+            )
+            self.solver_options['tol'] = utils.newton_default_tol(
+                output_template
+            )
 
         # set the ambient space tolerances (`allclose` parameters)
         # prefer using only rtol, but need to have atol>0 if the origin
@@ -434,7 +443,13 @@ class AutoConstrainedRWMH(autostep.AutoStep):
         if 'rtol' not in self.x_tols:
             self.x_tols['rtol'] = jnp.finfo(x_flat.dtype).eps**0.25
         if 'atol' not in self.x_tols:
-            self.x_tols['atol'] = self.solver_options['tol'] # this val already scales with size of problem so no need to scale again
+            # similar to newton solver tolerance but we need a template that
+            # lives in input space
+            self.x_tols['atol'] = utils.newton_default_tol(x_flat)
+
+        if DEBUG_CONSTRAINED_SAMPLING:
+            print(f"solver_options: {self.solver_options}")
+            print(f"x_tols: {self.x_tols}")
 
         # initialize the forward model state
         lss = self.levelset_handler.make_levelset_state(
@@ -513,7 +528,7 @@ class AutoConstrainedRWMH(autostep.AutoStep):
     # (i.e., invariant to flipping x<->y) based on L^2-norms
     # better than jnp.allclose which is == all(jnp.isclose)
     def close_in_ambient_space(self, x, y):
-        return utils.close_in_norm(
+        return utils.symmetric_allclose(
             x, y, self.x_tols['rtol'], self.x_tols['atol']
         )
 

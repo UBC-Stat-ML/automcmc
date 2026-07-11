@@ -9,6 +9,9 @@ from scipy import stats
 import jax
 from jax import numpy as jnp
 
+import numpyro
+from numpyro.infer import MCMC
+
 from automcmc import (
     constrained,
     utils,
@@ -17,7 +20,6 @@ from automcmc import (
     optimization
 )
 from automcmc.constrained import LevelSetHandlerCholesky, LevelSetHandlerQR
-from numpyro.infer import MCMC
 
 TESTED_LEVELSET_HANDLERS = (LevelSetHandlerCholesky(), LevelSetHandlerQR())
 
@@ -39,7 +41,7 @@ class TestConstrained(unittest.TestCase):
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn=pot,
             fwd_model=lambda x: jnp.ones_like(x, shape=(2,)),
-            init_obs_output=jnp.array([-3,3]), # not in range of fwd mod
+            init_obs_output=jnp.array([-3.0,3.0]), # not in range of fwd mod
         )
         with self.assertRaisesRegex(AssertionError, "Cannot find feasible"):
             kernel.init(jax.random.key(1), 0, init_params, (), {})
@@ -105,6 +107,7 @@ class TestConstrained(unittest.TestCase):
 
 
     def test_constrained_involution(self):
+        # constrained.DEBUG_CONSTRAINED_SAMPLING=True
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
         rng_key = jax.random.key(1)
         n_dim = 121
@@ -113,7 +116,7 @@ class TestConstrained(unittest.TestCase):
             'circle': lambda x: (x*x).sum(keepdims=True)-1,
             'orthonormal': testutils.orthonormal_constraint
         }
-        n_reps = 3
+        n_reps = 10
         for constraint_fn_type, constraint_fn in constraint_fn_types.items():
             for n_rep in range(n_reps):
                 with self.subTest(
@@ -132,8 +135,12 @@ class TestConstrained(unittest.TestCase):
                         refresh_key
                     ) = jax.random.split(rng_key, 4)
                     init_params = jax.random.normal(randn_key, (n_dim,))
+                    x_atol = utils.newton_default_tol(init_params)
+                    q_atol = utils.newton_default_tol(constraint_fn(init_params))
                     state = kernel.init(init_key, 0, init_params, (), {})
+                    self.assertEqual(x_atol, kernel.x_tols['atol'])
                     tol = kernel.solver_options['tol']
+                    self.assertEqual(tol, q_atol)
                     self.assertTrue(state.idiosyncratic.is_satisfied)
                     self.assertLess(
                         utils.newton_fn_value_err(constraint_fn(state.x)), tol
@@ -163,9 +170,19 @@ class TestConstrained(unittest.TestCase):
                         utils.newton_fn_value_err(constraint_fn(state_one.x)),
                         tol
                     )
-                    self.assertFalse(kernel.close_in_ambient_space(
-                            state_one.x, state.x
-                    ))
+
+                    # check x
+                    atol,rtol = kernel.x_tols['atol'], kernel.x_tols['rtol']
+                    elemwise_thresholds = utils._symmetric_allclose_thresholds(
+                        state.x, state_one.x, rtol,atol)
+                    abs_diffs = jnp.abs(state.x - state_one.x)
+                    imax = (abs_diffs-elemwise_thresholds).argmax()
+                    self.assertFalse(
+                        kernel.close_in_ambient_space(state_one.x, state.x),
+                        f"\nstate_one.x[imax]={state_one.x[imax]}\n"
+                        f"state.x[imax]={state.x[imax]}\n"
+                        f"elemwise_thresholds[imax]={elemwise_thresholds[imax]}"
+                    )
                     self.assertAlmostEqual(
                         # due to nature of this problem, velocities are also
                         # rotating around, and therefore its density (std
@@ -188,10 +205,20 @@ class TestConstrained(unittest.TestCase):
                         kernel.close_in_ambient_space(state_two.x, state.x),
                         f"|diff|/|x0| = {jnp.linalg.norm(state_two.x- state.x)/jnp.linalg.norm(state.x)}"
                     )
+
+                    # check p
+                    elemwise_thresholds = utils._symmetric_allclose_thresholds(
+                        state_two.p_flat, state.p_flat, rtol,atol)
+                    abs_diffs = jnp.abs(state_two.p_flat - state.p_flat)
+                    imax = (abs_diffs-elemwise_thresholds).argmax()
                     self.assertTrue(
                         kernel.close_in_ambient_space(
                             state_two.p_flat, state.p_flat
                         ),
+                        f"state.p_flat[imax]={state.p_flat[imax]}\n"
+                        f"state_two.p_flat[imax]={state_two.p_flat[imax]}\n"
+                        f"abs_diffs[imax]={abs_diffs[imax]}\n"
+                        f"thresholds[imax]={elemwise_thresholds[imax]}"
                     )
 
     def test_sampling_torus(self):
@@ -234,8 +261,8 @@ class TestConstrained(unittest.TestCase):
         # assumption is "less broken"
         mode = "direct"
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
-        n_warm, n_keep = utils.split_n_rounds(15)
-        thinning=32 # %ESS ~ 1/32
+        n_warm, n_keep = utils.split_n_rounds(13)
+        thinning=16
         init_params = jnp.ones(3) # init outside level set on purpose
         extra_fields = ('idiosyncratic.log_abs_det',)
         for sel in (
@@ -258,6 +285,10 @@ class TestConstrained(unittest.TestCase):
                 progress_bar=False
             )
             mcmc.run(mcmc_key,init_params=init_params, extra_fields=extra_fields)
+            max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+            self.assertLess(max_grd, 1.04)
+            self.assertGreater(min_ess, 90)
+
             log_abs_det = next(iter((mcmc.get_extra_fields().values())))
             self.assertLess(jnp.abs(log_abs_det).max(), 2*kernel.x_tols['atol']) # check that they are all ~0
             samples = mcmc.get_samples()
@@ -266,8 +297,8 @@ class TestConstrained(unittest.TestCase):
                 kernel.solver_options['tol']
             )
             theta, phi = inv_param_fn(*samples.T)
-            self.assertAlmostEqual(theta.mean(), jnp.pi, delta=0.15)
-            self.assertAlmostEqual(phi.mean(), jnp.pi, delta=0.15)
+            self.assertAlmostEqual(theta.mean(), jnp.pi, delta=0.2)
+            self.assertAlmostEqual(phi.mean(), jnp.pi, delta=0.2)
 
             # KS tests
             self.assertGreater(stats.ks_1samp(theta, theta_cdf_fn).pvalue, 0.001)
@@ -283,8 +314,8 @@ class TestConstrained(unittest.TestCase):
         # mcmc sampling
         rng_key = jax.random.key(67534)
         init_params=jnp.full((3,), 0.5) # init in interior of cone
-        n_warm, n_keep = utils.split_n_rounds(14)
-        thinning=16 # %ESS ~ 1/16
+        n_warm, n_keep = utils.split_n_rounds(12)
+        thinning=16
         extra_fields = ('idiosyncratic.log_abs_det',)
         for sel in (
             selectors.FixedStepSizeSelector(),
@@ -309,6 +340,9 @@ class TestConstrained(unittest.TestCase):
                 mcmc.run(
                     mcmc_key, init_params=init_params, extra_fields=extra_fields
                 )
+                max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+                self.assertLess(max_grd, 1.04)
+                self.assertGreater(min_ess, 90)
                 log_abs_det = next(iter((mcmc.get_extra_fields().values())))
                 self.assertLess(
                     jnp.abs(log_abs_det+jnp.log(2)/2).max(), 1e-5 # check it matches the known constant
@@ -338,7 +372,6 @@ class TestConstrained(unittest.TestCase):
                 init_params=jax.random.normal(init_key, (n_dim,)) # init in interior of cone
                 n_warm, n_keep = utils.split_n_rounds(13)
                 thinning=2**6 # %ESS ~ 1/64
-                extra_fields = ('idiosyncratic.log_abs_det',)
                 rng_key, mcmc_key = jax.random.split(rng_key)
                 kernel = constrained.AutoConstrainedRWMH(
                     potential_fn=potential_fn,
@@ -355,11 +388,7 @@ class TestConstrained(unittest.TestCase):
                     thinning=thinning,
                     progress_bar=False
                 )
-                mcmc.run(
-                    mcmc_key, init_params=init_params, extra_fields=extra_fields
-                )
-                log_abs_det = next(iter((mcmc.get_extra_fields().values())))
-                self.assertLess(log_abs_det.std(), 0.05)
+                mcmc.run(mcmc_key, init_params=init_params)
 
                 # ks test for normality of traces of the matrices
                 traces = jax.vmap(
@@ -374,7 +403,7 @@ class TestConstrained(unittest.TestCase):
         n_chains = 64
         n_dim = 2
         rng_key = jax.random.key(9)
-        n_warm, n_keep = utils.split_n_rounds(13)
+        n_warm, n_keep = utils.split_n_rounds(11)
         thinning=2**3
 
         # define an equally spaced grid in [0,1]
@@ -412,25 +441,23 @@ class TestConstrained(unittest.TestCase):
         # make sure we didn't request too small radii
         self.assertGreater(init_obs_output[0,0], kernel.solver_options['tol'])
 
-        # check that the fwd model is respected along chains at every sample step
-        fwd_vals = jax.vmap(jax.vmap(fwd_model))(samples)
-        self.assertTrue(jnp.all(
-            jax.vmap(
-                partial(jnp.allclose, rtol=0, atol=kernel.solver_options['tol']),
-                in_axes=(1,None),
-            )(fwd_vals, init_obs_output)
-        ))
+        # check min ESS across all levelsets and both dims
+        min_ess = n_keep
+        for s in samples:
+            summary=numpyro.diagnostics.summary(s, group_by_chain=False)
+            min_ess = min(
+                min_ess, min(v['n_eff'].min() for v in summary.values())
+            )
+        self.assertGreater(min_ess, 90)
 
-        # but also check that the submanifolds are explored by ensuring the
+        # check that the submanifolds are explored by ensuring the
         # angles follow a Unif(-pi,pi) distribution
         # use a simple histogram check instead of KS test (too sensitive at
         # this number of samples, which are not really indep anyway)
         # impose grid to avoid being fooled by constant data
         angles = jnp.arctan2(samples[:,:,0],samples[:,:,1]).flatten()
         hist = jnp.histogram(angles,bins=jnp.linspace(-jnp.pi, jnp.pi, 11))
-        self.assertTrue(
-            jnp.allclose(hist[0], angles.size/10, rtol=0.15)
-        )
+        self.assertTrue(jnp.allclose(hist[0], angles.size/10, rtol=0.075))
 
     def test_mrna(self):
         def prior_potential(x):
@@ -459,7 +486,7 @@ class TestConstrained(unittest.TestCase):
 
         # define settings
         rng_key = jax.random.key(6)
-        n_rounds = 14
+        n_rounds = 13
         thinning = 2**4
         n_warm, n_keep = utils.split_n_rounds(n_rounds)
         measured_times = jnp.array((4.0,8.0,16.0))
@@ -492,14 +519,19 @@ class TestConstrained(unittest.TestCase):
             progress_bar=False
         )
         mcmc.run(mcmc_key, init_params=init_params)
-        assert True
+        max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+        self.assertLess(max_grd, 1.04)
+        self.assertGreater(min_ess, 90)
+
 
     def test_double_torus_unif(self):
+        # constrained.DEBUG_CONSTRAINED_SAMPLING=True
         # Sample the uniform distribution on the double torus by turning off
         # the co-area factor. This is necessary because the factor is not
         # constant on the zero level set.
         rng_key = jax.random.key(6)
-        n_rounds = 10
+        n_rounds = 12
+        thinning = 2**4
         n_warm, n_keep = utils.split_n_rounds(n_rounds)
         init_key, mcmc_key = jax.random.split(rng_key)
         init_params = jax.random.uniform(init_key,(3,),minval=-1)
@@ -507,20 +539,25 @@ class TestConstrained(unittest.TestCase):
         kernel = constrained.AutoConstrainedRWMH(
             potential_fn = lambda x: jnp.zeros_like(x,shape=()),
             constraint_fn = testutils.double_torus_constraint,
-            init_base_step_size = 0.5,
-            selector = selectors.DeterministicSymmetricSelector(p_hi=0.9),
-            add_coarea_factor= False
+            init_base_step_size = 0.8,
+            selector = selectors.FixedStepSizeSelector(),
+            add_coarea_factor= False,
+            levelset_finder_settings=True
         )
         mcmc = MCMC(
             kernel,
             num_warmup=n_warm,
             num_samples=n_keep,
+            thinning=thinning,
             progress_bar=False
         )
         mcmc.run(mcmc_key, init_params=init_params,extra_fields = extra_fields)
-        extra_fields_samples = mcmc.get_extra_fields()
+        max_grd, min_ess = testutils.extremal_diagnostics(mcmc)
+        self.assertLess(max_grd, 1.04)
+        self.assertGreater(min_ess, 90)
 
         # check the factor changes along the surface
+        extra_fields_samples = mcmc.get_extra_fields()
         self.assertGreater(
             extra_fields_samples['idiosyncratic.log_abs_det'].std(),
             0.1

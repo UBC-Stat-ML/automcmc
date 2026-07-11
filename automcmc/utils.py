@@ -77,33 +77,48 @@ def n_warmup_to_adapt_rounds(n_warmup):
 # numerical utils
 ###############################################################################
 
-def close_in_norm(
-        x: ArrayLike,
-        y: ArrayLike,
+@jax.jit
+def _symmetric_allclose_thresholds(a,b,rtol,atol):
+    elemwise_smallest_abs = jnp.minimum(jnp.abs(a), jnp.abs(b))
+    elemwise_thresholds = jnp.maximum(atol, rtol*elemwise_smallest_abs)
+    return elemwise_thresholds
+
+@jax.jit
+def symmetric_allclose(
+        a: ArrayLike,
+        b: ArrayLike,
         rtol: ArrayLike,
         atol: ArrayLike
     ) -> jax.Array:
     """
-    Check closeness of two arrays by comparing the norm of their difference to
-    the minimum of their individual norms.
+    Symmetric version of :func:`jnp.allclose`, which is basically elementwise
+    :func:`jnp.isclose` plus a :func:`jnp.all` reduction. Note that
+    ```
+        |a-b| < max{atol, rtol*min{|a|,|b|}} < max{atol,rtol|b|} < atol+rtol|b|
+    ```
+    The first inequality is symmetric in `(a,b)`, and the last term on the
+    right is the threshold used in `jnp.isclose`. So the symmetric version is
+    also stricter.
 
-    :param ArrayLike x: first array to compare.
-    :param ArrayLike y: second array to compare.
+    :param ArrayLike a: first array to compare.
+    :param ArrayLike b: second array to compare.
     :param ArrayLike rtol: relative tolerance.
     :param ArrayLike atol: absolute tolerance
     :return jax.Array: `True` if close.
     """
-    diff_norm = jnp.linalg.norm(x-y)
-    x_norm = jnp.linalg.norm(x)
-    y_norm = jnp.linalg.norm(y)
-    return diff_norm < jnp.maximum(atol, rtol*jnp.minimum(x_norm, y_norm))
+    assert jnp.shape(a) == jnp.shape(b)
+    elemwise_thresholds = _symmetric_allclose_thresholds(a, b, rtol, atol)
+    return jnp.all(jnp.abs(a-b) < elemwise_thresholds)
 
 def newton_default_tol(x: ArrayLike) -> jax.Array:
-    # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most packages
-    # we use eps^0.4 for a slightly tighter requirement.
-    # This is then increased as log(n) because we focus on max-error, which
-    # scales logarithmically in the iid case (assuming subexponential tails)
-    return jnp.maximum(1.0,jnp.log(x.size))*(jnp.finfo(x.dtype).eps**0.4)
+    # for float64, eps^(0.32) ~ 1e-5 which is the std tol use in most
+    # implementations of Newton algorithm. We use eps^0.5 for a slightly
+    # tighter requirement. This is then increased linearly because we focus on
+    # max-error, which in worse case (heavy tailed sequences) scales as sum so
+    # O(n). It would be logarithmically in the iid case if we also assume
+    # subexponential tails, but this is not representative of the errors seen
+    # in experiments (very heavy tailed).
+    return x.size*jnp.sqrt(jnp.finfo(x.dtype).eps)
 
 def newton_fn_value_err(val):
     return jnp.abs(val).max()
@@ -111,8 +126,8 @@ def newton_fn_value_err(val):
 def newton(
         f: Callable[[ArrayLike], jax.Array],
         x0: ArrayLike,
-        tol: Optional[float] = None,
-        max_iter: int = 100,
+        tol: ArrayLike,
+        max_iter: int = 50,
         mode: str = "direct"
     ) -> tuple:
     """
@@ -145,8 +160,6 @@ def newton(
     assert len(val0) == dim
     n_skip_err_inc = max_iter // 10 # first tenth of max iters can increase error
     err0 = newton_fn_value_err(val0)
-    if tol is None:
-        tol = newton_default_tol(err0)
 
     def cond_fn(carry):
         x, n, val, err, d_err = carry
