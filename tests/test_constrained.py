@@ -261,7 +261,7 @@ class TestConstrained(unittest.TestCase):
         # assumption is "less broken"
         mode = "direct"
         potential_fn = lambda x: jnp.zeros_like(x,shape=()) # uniform
-        n_warm, n_keep = utils.split_n_rounds(12)
+        n_warm, n_keep = utils.split_n_rounds(13)
         thinning=16
         init_params = jnp.ones(3) # init outside level set on purpose
         extra_fields = ('idiosyncratic.log_abs_det',)
