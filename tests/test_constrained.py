@@ -221,6 +221,59 @@ class TestConstrained(unittest.TestCase):
                         f"thresholds[imax]={elemwise_thresholds[imax]}"
                     )
 
+    def test_constrained_invariance(self):
+        # If x ~ Unif(B(0,1)), then y=x_1^2 ~ Beta(1/2, (d-1)/2)
+        # for dist of x_1, see https://math.stackexchange.com/a/3572898/612568
+        # which after change of variable clearly gives the above
+        n_dim = 16
+        n_sim = 128
+        cdf = partial(stats.beta.cdf, a=0.5, b=0.5*(n_dim-1))
+        rng_key = jax.random.key(76)
+        zs_key, mcmc_key = jax.random.split(rng_key)
+        zs = jax.random.normal(zs_key, (n_sim, n_dim))
+        xs = (zs.T / jnp.linalg.norm(zs, axis=-1)).T
+        # ys = jnp.square(xs[:,0])
+        # stats.ks_1samp(ys, cdf).pvalue
+        # pdf = partial(stats.beta.pdf, a=0.5, b=0.5*(n_dim-1))
+        # y_grid = np.linspace(0,1,100)
+        # y_pdf = pdf(y_grid)
+        # fig, ax = plt.subplots()
+        # ax.hist(ys,density=True)
+        # ax.plot(y_grid, y_pdf)
+        # fig.savefig('temp.pdf'); plt.close()
+
+        # fixed mcmc params
+        n_warm, n_keep = utils.split_n_rounds(10)
+        thinning = n_keep
+        init_obs_output = jnp.ones((n_sim,1)) # we want indep chains on fixed level set
+        for sel in (
+            selectors.FixedStepSizeSelector(),
+            selectors.DeterministicSymmetricSelector(p_hi=0.9),
+        ):
+            # define sampler
+            kernel = constrained.AutoConstrainedRWMH(
+                potential_fn = lambda x: jnp.zeros_like(x,shape=()), # uniform
+                fwd_model=partial(jnp.linalg.norm, keepdims=True),
+                init_obs_output=init_obs_output,
+                init_base_step_size = jnp.reciprocal(jnp.sqrt(n_dim)),
+                selector = sel
+            )
+
+            # run mcmc and get samples
+            mcmc = MCMC(
+                kernel,
+                num_warmup=n_warm,
+                num_samples=n_keep,
+                thinning=thinning,
+                num_chains=n_sim,
+                chain_method="vectorized",
+                progress_bar=False
+            )
+            mcmc.run(mcmc_key, init_params=xs) # init at samples from the target
+            samples = mcmc.get_samples(True)
+            ys_mcmc = jnp.square(samples[:,-1,0]) # every chain, last step, first coord
+            self.assertGreater(stats.ks_1samp(ys_mcmc, cdf).pvalue, 0.01)
+
     def test_sampling_torus(self):
         # T^2 torus embedded in R^3
         # Example 1 in Zappa & Holmes-Cerfon (2018)
@@ -399,6 +452,15 @@ class TestConstrained(unittest.TestCase):
                 )
 
     def test_constrained_vectorized(self):
+        ###### Fwd model: spheres in R^d of arbitrary radii #####
+        #   F(x) = |x| = [sum_i x_i^2]^{1/2}
+        #   dF/dx_i = (1/2)[sum_i x_i^2]^{-1/2} 2 x_i = x_i/|x|
+        #   JJ^T = (dF/dx_1 ... dF/dx_d)^T(dF/dx_1 ... dF/dx_d)
+        #     = (1/|x|^2) sum_i x_i^2 = |x|^2/|x|^2 = 1
+        #   |JJ^T|^{-1/2} = 1 => log(|JJ^T|^{-1/2}) = 0
+        # It follows that the ambient uniform induces the uniform distribution
+        # on the surfaces of all the spheres for every radius
+
         # params
         n_chains = 64
         n_dim = 2
@@ -416,7 +478,7 @@ class TestConstrained(unittest.TestCase):
 
         # define sampler
         potential_fn=lambda x: jnp.zeros((), x.dtype)
-        fwd_model=lambda x: jnp.array([jnp.linalg.norm(x)])
+        fwd_model=partial(jnp.linalg.norm, keepdims=True)
         mcmc_key, params_key = jax.random.split(rng_key)
         init_params = jax.random.normal(params_key,(n_chains, n_dim))
         kernel = constrained.AutoConstrainedRWMH(
@@ -424,6 +486,7 @@ class TestConstrained(unittest.TestCase):
             fwd_model=fwd_model,
             init_obs_output=init_obs_output
         )
+        extra_fields = ('idiosyncratic',)
 
         # run mcmc and get samples
         mcmc = MCMC(
@@ -435,13 +498,28 @@ class TestConstrained(unittest.TestCase):
             chain_method="vectorized",
             progress_bar=False
         )
-        mcmc.run(mcmc_key,init_params=init_params)
-        samples = mcmc.get_samples(True)
+        mcmc.run(mcmc_key,init_params=init_params, extra_fields=extra_fields)
 
         # make sure we didn't request too small radii
         self.assertGreater(init_obs_output[0,0], kernel.solver_options['tol'])
 
+        # check log abs det factor is 0 across all radii
+        lss_samples = mcmc.get_extra_fields(True)['idiosyncratic']
+        self.assertAlmostEqual(
+            0,
+            utils.newton_fn_value_err(lss_samples.log_abs_det),
+            delta = kernel.solver_options['tol']
+        )
+
+        # check that the obs output of every chain matches the initial vals
+        self.assertTrue(
+            jnp.all(
+                jax.vmap(jnp.allclose)(lss_samples.obs_output, init_obs_output)
+            )
+        )
+
         # check min ESS across all levelsets and both dims
+        samples = mcmc.get_samples(True)
         min_ess = n_keep
         for s in samples:
             summary=numpyro.diagnostics.summary(s, group_by_chain=False)
