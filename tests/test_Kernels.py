@@ -245,18 +245,23 @@ class TestKernels(unittest.TestCase):
         n_rounds = 15
         n_warmup, n_keep = utils.split_n_rounds(n_rounds)
         for kernel_class in self.TESTED_KERNELS:
+            # AutoPCN does not work
+            if kernel_class is autopcn.AutoPCN:
+                continue
             # id precond doesnt work here
-            for prec in (p for p in self.TESTED_PRECONDITIONERS if not isinstance(p, preconditioning.IdentityDiagonalPreconditioner)):
+            for prec in (
+                p for p in self.TESTED_PRECONDITIONERS
+                if not isinstance(p, preconditioning.IdentityDiagonalPreconditioner)
+            ):
                 for sel in self.TESTED_SELECTORS:
                     # selectors don't make a difference for non-AutoStep samplers
-                    if kernel_class is slicer.HitAndRunSliceSampler and (sel is not selectors.DeterministicSymmetricSelector):
+                    # set one arbitrarily
+                    if (
+                        kernel_class is slicer.HitAndRunSliceSampler
+                        and sel is not selectors.DeterministicSymmetricSelector
+                    ):
                         continue
-                    # # doesnt work with automala here
-                    # if sel is selectors.AsymmetricSelector:
-                    #     continue
-                    # AutoPCN only works with the MaxEJD selector
-                    if kernel_class is autopcn.AutoPCN and sel is not selectors.MaxEJDSelector:
-                        continue
+
                     with self.subTest(kernel_class=kernel_class, prec_type=type(prec), sel_type=sel):
                         print(f"kernel_class={kernel_class}, prec_type={type(prec)}, sel_type={sel}")
                         rng_key, run_key = random.split(rng_key)
