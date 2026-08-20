@@ -1,4 +1,6 @@
-from typing import Callable, Optional
+from typing import Callable
+
+import numpy as np
 
 import jax
 from jax import lax
@@ -205,3 +207,12 @@ def newton(
     # run loop and return full carry for diagnostics plus flag
     carry = jax.lax.while_loop(cond_fn, body_fn, (x0, 0, val0, err0, err0))
     return (*carry, carry[3]<tol)
+
+
+# Alternative to jnp.linalg.matrix_rank with a more useful rtol arg
+def matrix_rank(M, rtol):
+    S = jnp.linalg.svd(
+        M, full_matrices=False, compute_uv=False, hermitian=False
+    )
+    tol = S.max(-1) * rtol
+    return (S > tol).sum()
