@@ -150,7 +150,7 @@ class LevelSetHandlerCholesky(LevelSetHandler):
             x_base, obs_output, is_satisfied, log_abs_det, chol
         )
         if check_rank:
-            return lss, jnp.linalg.matrix_rank(chol) == chol.shape[-1]
+            return lss, utils.matrix_rank(chol, tol) == chol.shape[-1]
         else:
             return lss
 
@@ -208,7 +208,7 @@ class LevelSetHandlerQR(LevelSetHandler):
         log_abs_det = -jnp.log(jnp.abs(jnp.diag(R))).sum()
         lss = LevelSetState(x_base, obs_output, is_satisfied, log_abs_det, Q)
         if check_rank:
-            return lss, jnp.linalg.matrix_rank(R) == R.shape[-1]
+            return lss, utils.matrix_rank(R, tol) == R.shape[-1]
         else:
             return lss
 
