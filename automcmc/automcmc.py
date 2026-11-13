@@ -191,7 +191,7 @@ class AutoMCMC(infer.mcmc.MCMCKernel, metaclass=ABCMeta):
                 if isinstance(self.optimize_init_params, dict)
                 else {}
             )
-            initial_params = initialization.optimize_init_params(
+            initial_params, _ = initialization.optimize_init_params(
                 self.logprior_and_loglik,
                 initial_params,
                 self.init_inv_temp,
