@@ -36,22 +36,22 @@ def MAP(
         rng_key,
         model_args,
         model_kwargs,
-        optimize_fun_settings=optimization.DEFAULT_OPTIMIZE_FUN_SETTINGS
+        **kwargs
     ):
     init_params, potential_fn, *_ = init_model(
         model, rng_key, model_args, model_kwargs
     )
     return optimization.optimize_fun(
-        potential_fn, 
-        init_params, 
-        optimize_fun_settings,
+        potential_fn,
+        init_params,
+        **kwargs,
     )
 
 # called within kernel initialization
 def optimize_init_params(
-        logprior_and_loglik, 
-        init_params, 
-        inv_temp, 
+        logprior_and_loglik,
+        init_params,
+        inv_temp,
         **kwargs
     ):
     # define tempered posterior as target function
@@ -63,7 +63,7 @@ def optimize_init_params(
 
     # TODO: maybe use the final optimizer state to tune samplers (e.g. preconditioner)
     return optimization.optimize_fun(
-        target_fun, 
-        init_params, 
+        target_fun,
+        init_params,
         **kwargs
     )

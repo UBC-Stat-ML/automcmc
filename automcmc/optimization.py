@@ -15,8 +15,7 @@ from automcmc import utils
 # NADAMW
 # More robust than ADAM according to https://arxiv.org/abs/2306.07179)
 def make_nadamw_solver(target_fun, solver_params, verbose):
-    if verbose:
-        print(f'NADAMW optimization loop.')
+    verbose and print(f'NADAMW optimization loop.')
 
     # build solver
     solver = optax.nadamw(**solver_params)
@@ -34,8 +33,7 @@ def make_nadamw_solver(target_fun, solver_params, verbose):
 
 # L-BFGS
 def make_lbfgs_solver(target_fun, solver_params, verbose):
-    if verbose:
-        print(f'L-BFGS optimization loop.')
+    verbose and print(f'L-BFGS optimization loop.')
 
     # can reuse stuff because target is deterministic
     # see https://optax.readthedocs.io/en/stable/api/optimizers.html#lbfgs
@@ -98,7 +96,7 @@ def optimization_loop(
             t.set_postfix_str(diag_str, refresh=False) # will refresh with `update`
             t.update()
             n += 1
-    print(f'Final energy: {value:.1e}')
+    verbose and print(f'Final energy: {value:.1e}')
     return params, opt_state, value
 
 DEFAULT_OPTIMIZE_FUN_SETTINGS = {
@@ -136,8 +134,8 @@ def optimize_fun(
         Mechanics and Engineering, 446*, 118308.
     """
     # start with NADAMW
-    init_value = value_nadamw = value_lbfgs = target_fun(init_params)
     opt_params = init_params
+    opt_value = target_fun(init_params)
     if "NADAMW" in settings:
         solver, step_fn = make_nadamw_solver(
             target_fun, settings["NADAMW"]['solver_params'], verbose
@@ -152,8 +150,9 @@ def optimize_fun(
             verbose=verbose,
             **kwargs
         )
-        if jnp.isfinite(value_nadamw) and value_nadamw<init_value:
+        if value_nadamw < opt_value:
             opt_params = opt_params_nadamw
+            opt_value = value_nadamw
 
     # refine with L-BFGS
     if "L-BFGS" in settings:
@@ -170,9 +169,8 @@ def optimize_fun(
             verbose=verbose,
             **kwargs
         )
+        if value_lbfgs < opt_value:
+            opt_params = opt_params_lbfgs
+            opt_value = value_lbfgs
 
-    # return lbfgs if better, explicitly handle nans (nan < x != nan)
-    if jnp.isfinite(value_lbfgs) and value_lbfgs < value_nadamw:
-        return opt_params_lbfgs
-    else:
-        return opt_params_nadamw
+    return opt_params, opt_value
